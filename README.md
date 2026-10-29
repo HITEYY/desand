@@ -13,6 +13,7 @@
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+.venv/bin/playwright install chromium   # headless browser for the browser tools
 ```
 
 사용할 provider의 API 키를 환경변수로 설정:
@@ -24,6 +25,7 @@ python3 -m venv .venv
 | `opencode-go-anthropic` | `OPENCODE_API_KEY` | `claude-haiku-5-5` | Anthropic 호환 |
 | `openscale` | `OPENSCALE_KEY` | 없음 (`MODEL` 지정 필요) | OpenAI 호환 |
 | `experiential` | `EXPERIENTIAL_API_KEY` | 없음 (`MODEL` 지정 필요) | OpenAI 호환 |
+| `hinoki` | `HINOKI_API_KEY` | 없음 (`MODEL` 지정 필요) | OpenAI 호환 |
 
 ## 사용법
 
@@ -68,6 +70,7 @@ docker run --rm -p 127.0.0.1:8000:8000 \
 
 - `/work`: workspace 들이 `/work/workspaces/<이름>/` 에 생성됨 (CLI `agent.py` 는 `/work` 전체)
 - `/app/trajectories`: 학습 데이터 저장 위치
+- 이미지에 Playwright + 헤드리스 Chromium 이 포함되어 있어 브라우저 도구를 바로 쓸 수 있습니다
 - 반드시 `127.0.0.1:<포트>:8000` 으로 publish 하세요. 패널은 인증이 없고, Host 헤더가 `localhost`/`127.0.0.1` 일 때만 동작합니다.
 - 태그: `latest`(main), `main`, `sha-<커밋>`, `v1.2.3` 태그 푸시 시 `1.2.3`·`1.2`
 
@@ -99,6 +102,7 @@ TOOLS = [list_files, read_file]   # 기본: 로컬 도구 전체
 |---|---|
 | `get_time` | 현재 시각 |
 | `list_files`, `read_file`, `write_file` | 실행 폴더 안의 파일만 접근 (밖은 거부) |
+| `browser_open`, `browser_click`, `browser_fill`, `browser_text`, `browser_screenshot` | 헤드리스 Chromium 으로 페이지 열기/클릭/입력/텍스트/스크린샷. 스크린샷은 실행 폴더에 저장 |
 | `WEB_TOOLS` | Anthropic 서버 도구 `web_search`, `web_fetch` (`PROVIDER = "anthropic"` 전용, 턴당 각 5회) |
 
 직접 도구를 추가하려면 `anthropic`의 `@beta_tool` 함수를 만들어 `TOOLS`에 넣으면 됩니다. 함수 시그니처와 docstring에서 스키마가 자동 생성되고, OpenAI 호환 provider에도 같은 도구가 쓰입니다.

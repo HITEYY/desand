@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,8 @@ PROVIDERS = {
     "openscale": dict(kind="openai", base_url="https://api.openscale.so/v1", key_env="OPENSCALE_KEY", model=None),
     "experiential": dict(kind="openai", base_url="https://api.experientiallabs.ai/v1",
                          key_env="EXPERIENTIAL_API_KEY", model=None),
+    # Hinoki (app.hinoki.security): same host also speaks Anthropic Messages at /v1/messages
+    "hinoki": dict(kind="openai", base_url="https://inference.hinoki.security/v1", key_env="HINOKI_API_KEY", model=None),
 }
 
 
@@ -80,7 +83,105 @@ def write_file(path: str, content: str) -> str:
     return f"wrote {len(content)} chars to {path}"
 
 
-TOOLS = [get_time, list_files, read_file, write_file]
+# Playwright's sync API is bound to the thread that started it, so each agent turn (one thread) gets
+# its own browser, launched on first use and closed when the turn ends.
+_browser = threading.local()
+
+
+def _page():
+    page = getattr(_browser, "page", None)
+    if page is None:
+        from playwright.sync_api import sync_playwright  # imported lazily so the app runs without a browser
+        pw = sync_playwright().start()
+        try:
+            browser = pw.chromium.launch(headless=True)
+        except BaseException:
+            pw.stop()
+            raise
+        _browser.playwright, _browser.browser, _browser.page = pw, browser, browser.new_page()
+        page = _browser.page
+    return page
+
+
+def close_browser() -> None:
+    """Close this thread's browser (if any); called after each agent turn."""
+    browser = getattr(_browser, "browser", None)
+    if browser is not None:
+        browser.close()
+        _browser.playwright.stop()
+        _browser.page = _browser.browser = _browser.playwright = None
+
+
+def _snapshot(page) -> str:
+    return f"URL: {page.url}\nTitle: {page.title()}\n\n{page.inner_text('body')[:20_000]}"
+
+
+def _settle(page) -> None:
+    try:  # pages with long-polling requests may never finish loading; the text is still usable
+        page.wait_for_load_state("domcontentloaded", timeout=10_000)
+    except Exception:
+        pass
+
+
+@beta_tool
+def browser_open(url: str) -> str:
+    """Open a URL in a headless browser and return the page text.
+
+    Args:
+        url: The page URL to open (http/https).
+    """
+    page = _page()
+    page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+    return _snapshot(page)
+
+
+@beta_tool
+def browser_click(selector: str) -> str:
+    """Click an element on the page that browser_open opened, then return the page text.
+
+    Args:
+        selector: CSS selector of the element to click (e.g. "button#submit" or "a[href*=next]").
+    """
+    page = _page()
+    page.click(selector, timeout=10_000)
+    _settle(page)
+    return _snapshot(page)
+
+
+@beta_tool
+def browser_fill(selector: str, text: str) -> str:
+    """Type text into an input on the page that browser_open opened (does not submit).
+
+    Args:
+        selector: CSS selector of the input or textarea.
+        text: Text to enter.
+    """
+    page = _page()
+    page.fill(selector, text, timeout=10_000)
+    return f"filled {selector} with {len(text)} chars"
+
+
+@beta_tool
+def browser_text() -> str:
+    """Return the text of the page that browser_open opened."""
+    return _snapshot(_page())
+
+
+@beta_tool
+def browser_screenshot(path: str = "screenshot.png") -> str:
+    """Save a full-page PNG screenshot of the open page inside the working directory.
+
+    Args:
+        path: File path relative to the working directory.
+    """
+    p = _safe(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    _page().screenshot(path=str(p), full_page=True)
+    return f"saved screenshot to {path}"
+
+
+BROWSER_TOOLS = [browser_open, browser_click, browser_fill, browser_text, browser_screenshot]
+TOOLS = [get_time, list_files, read_file, write_file, *BROWSER_TOOLS]
 
 # Anthropic server-side tools: run on Anthropic's servers, no local code. Only for PROVIDER = "anthropic".
 # web_fetch only fetches URLs already in the conversation (from the user or a web_search result).
@@ -272,4 +373,6 @@ def ask(agent, text: str) -> None:
         agent.error = str(e)
         del agent.messages[start:]
         return
+    finally:
+        close_browser()
     save_trajectory(agent)
