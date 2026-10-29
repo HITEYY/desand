@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}워크스페이스{% endblock %}
+{% block content %}
+<header class="topbar"><div><h1>워크스페이스</h1><p class="muted">에이전트 파일 도구는 자기 워크스페이스 폴더(<code>workspaces/&lt;이름&gt;/</code>) 밖을 볼 수 없습니다.</p></div></header>
+<div class="manage">
+  <form class="panel" id="workspace-form">
+    <h2>새 워크스페이스</h2>
+    <label>이름 <input name="name" required pattern="[\w\-][\w.\-]*" placeholder="project-a"></label>
+    <div class="actions"><button class="primary">만들기</button></div>
+  </form>
+  <section><h2>목록</h2><div id="workspace-list" class="list"></div></section>
+</div>
+{% endblock %}

@@ -1,17 +1,34 @@
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const opt = (value, text, selected) => { const o = el("option", null, text ?? value); o.value = value; o.selected = !!selected; return o; };
 const selected = new Set();   // agents checked to receive messages
 const rendered = {};          // name -> signature of last render, to keep scroll position stable
+let state = null;
 
 async function api(path, body) {
   const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  if (r.status === 401) { location.replace("/login"); return {}; }
   const data = await r.json();
   if (!r.ok) toast(data.error || r.statusText);
   return data;
 }
-// popover = top layer, so it shows above the open start dialog
-function toast(msg) { const t = $("#toast"); t.textContent = msg; if (!t.matches(":popover-open")) t.showPopover();
+// popover = top layer, so it shows above an open dialog
+function toast(msg, ok) { const t = $("#toast"); t.textContent = msg; t.classList.toggle("ok", !!ok);
+  if (!t.matches(":popover-open")) t.showPopover();
   clearTimeout(t._h); t._h = setTimeout(() => t.hidePopover(), 4000); }
+
+function row(title, sub, ...actions) {
+  const r = el("div", "row"), meta = el("div", "meta");
+  meta.append(el("b", null, title), el("small", null, sub));
+  r.append(meta, ...actions);
+  return r;
+}
+function button(text, onclick, cls) { const b = el("button", cls || "ghost", text); b.type = "button"; b.onclick = onclick; return b; }
+function emptyNote(box, text) { if (!box.children.length) box.append(el("p", "empty", text)); }
+
+$("#logout").onclick = () => api("/api/logout", {}).then(() => location.replace("/login"));
+
+// ---------- chat page ----------
 
 function renderLog(log, a) {
   log.replaceChildren();
@@ -25,96 +42,34 @@ function renderLog(log, a) {
     }
   }
   if (a.error) log.append(el("div", "msg err", "error: " + a.error));
-  if (a.busy) log.append(el("div", "msg call", "…"));
+  if (a.busy) log.append(el("div", "msg typing", "생각 중…"));
+  if (!log.children.length) log.append(el("p", "empty", "아래 입력창에서 메시지를 보내세요."));
   log.scrollTop = log.scrollHeight;
 }
 
-function renderKeys(keys) {
-  const box = $("#keys");
-  for (const [k, set] of Object.entries(keys)) {
-    let row = box.querySelector(`.key[data-key="${k}"]`);
-    if (!row) {  // build once, so polling doesn't wipe what's being typed
-      row = el("form", "key"); row.dataset.key = k;
-      const label = el("label"); label.append(el("span", "dot"), el("span", null, k));
-      const input = el("input"); input.type = "password"; input.autocomplete = "off"; input.setAttribute("aria-label", k);
-      const save = el("button", null, "Save");
-      row.onsubmit = async (e) => {
-        e.preventDefault();
-        const r = await api("/api/key", { env: k, value: input.value });
-        if (r.ok) input.value = "";
-        refresh();
-      };
-      row.append(label, input, save); box.append(row);
-    }
-    row.querySelector(".dot").classList.toggle("off", !set);
-    row.querySelector("input").placeholder = set ? "설정됨 (비우고 Save = 삭제)" : "키 입력";
-  }
-}
-
-async function loadModels(provider) {
-  const list = $(`#models-${CSS.escape(provider)}`);
-  if (list.dataset.loaded) return;
-  list.dataset.loaded = "1";
-  for (const id of await api(`/api/models?provider=${encodeURIComponent(provider)}`)) list.append(el("option", null)).value = id;
-}
-
-const dlg = $("#start-dialog");
-let starting = null;  // agent info the dialog is starting
-
-function openStart(a) {
-  starting = a;
-  const f = dlg.querySelector("form");
-  f.querySelector("h3").textContent = `${a.name} · ${a.provider}`;
-  if (!$(`#models-${CSS.escape(a.provider)}`)) { const dl = el("datalist"); dl.id = `models-${a.provider}`; document.body.append(dl); }
-  const m = f.model;
-  m.setAttribute("list", `models-${a.provider}`); m.value = "";
-  m.placeholder = a.model || "모델 입력 (필수)"; m.required = !a.model;
-  m.onfocus = () => loadModels(a.provider);
-  dlg.showModal();
-}
-
-function renderAvailable(state, runningNames) {
-  const av = $("#available");
-  av.querySelectorAll(":scope > :not([data-name])").forEach(e => e.remove());  // server-rendered placeholders
-  $("#workspaces").replaceChildren(...state.workspaces.map(w => { const o = el("option"); o.value = w; return o; }));
-  for (const a of state.available) {
-    let row = av.querySelector(`[data-name="${CSS.escape(a.name)}"]`);
-    if (!row) {
-      row = el("button", "avail"); row.dataset.name = a.name;
-      row.append(el("span", null, a.name), el("small", null, a.provider));
-      av.append(row);
-    }
-    row.onclick = () => openStart(a);  // latest info (default model may change)
-    const on = runningNames.includes(a.name);
-    row.classList.toggle("on", on);
-    row.disabled = on;
-  }
-}
-
-function render(state) {
-  if ($("#keys")) renderKeys(state.keys);
-  if (!$("#running")) return;  // settings page
-  const runningNames = state.running.map(a => a.name);
-  renderAvailable(state, runningNames);
-
-  const main = $("#running");
-  for (const n of [...selected]) if (!runningNames.includes(n)) selected.delete(n);
-  for (const card of [...main.querySelectorAll(".card")]) if (!runningNames.includes(card.dataset.name)) { card.remove(); delete rendered[card.dataset.name]; }
-  main.querySelector(".empty")?.remove();
-  if (!state.running.length) main.append(el("p", "empty", "왼쪽에서 에이전트를 시작하세요."));
+function renderRunning() {
+  const main = $("#running"), names = state.running.map(a => a.name);
+  for (const n of [...selected]) if (!names.includes(n)) selected.delete(n);
+  for (const card of [...main.querySelectorAll(".card")]) if (!names.includes(card.dataset.name)) { card.remove(); delete rendered[card.dataset.name]; }
+  main.querySelector(":scope > .empty")?.remove();
+  if (!state.running.length) main.append(el("p", "empty", "실행 중인 에이전트가 없습니다. 오른쪽 위 “에이전트 시작”을 누르세요."));
 
   for (const a of state.running) {
     let card = main.querySelector(`.card[data-name="${CSS.escape(a.name)}"]`);
     if (!card) {
       card = el("section", "card"); card.dataset.name = a.name;
       const head = el("header");
-      const cb = el("input"); cb.type = "checkbox"; cb.checked = selected.has(a.name); cb.title = "메시지 받기";
-      cb.onchange = () => cb.checked ? selected.add(a.name) : selected.delete(a.name);
-      const meta = el("div", "meta"); meta.append(el("b", null, a.name), el("small", null, `${a.workspace} · ${a.provider} / ${a.model}`));
-      const reset = el("button", null, "Reset"); reset.onclick = () => api("/api/reset", { name: a.name }).then(refresh);
-      const stop = el("button", null, "Stop"); stop.onclick = () => api("/api/stop", { name: a.name }).then(refresh);
-      head.append(cb, el("span", "dot"), meta, reset, stop);
+      const pick = el("label", "pick"); pick.title = "메시지 받기";
+      const cb = el("input"); cb.type = "checkbox"; cb.checked = selected.has(a.name);
+      cb.onchange = () => { cb.checked ? selected.add(a.name) : selected.delete(a.name); card.classList.toggle("selected", cb.checked); };
+      pick.append(cb);
+      const meta = el("div", "meta");
+      meta.append(el("b", null, a.name), el("small", null, `${a.workspace} · ${a.provider} / ${a.model}`));
+      head.append(pick, el("span", "dot"), meta,
+        button("초기화", () => api("/api/reset", { name: a.name }).then(refresh)),
+        button("중지", () => api("/api/stop", { name: a.name }).then(refresh), "ghost danger"));
       card.append(head, el("div", "log"));
+      card.classList.toggle("selected", selected.has(a.name));
       main.append(card);
     }
     card.querySelector(".dot").classList.toggle("busy", a.busy);
@@ -123,27 +78,192 @@ function render(state) {
   }
 }
 
-async function refresh() { try { render(await api("/api/state")); } catch (e) { /* server restarting */ } }
+function openStart() {
+  const dlg = $("#start-dialog"), f = dlg.querySelector("form");
+  const running = state.running.map(a => a.name);
+  const idle = state.available.filter(a => !running.includes(a.name));
+  if (!idle.length) return toast("시작할 수 있는 에이전트가 없습니다. 에이전트 메뉴에서 만드세요.");
+  f.agent.replaceChildren(...idle.map(a => opt(a.name, `${a.name}${a.custom ? "" : " (파일)"}`)));
+  f.workspace.replaceChildren(...state.workspaces.map(w => opt(w.name, null, w.name === "default")));
+  const fillModels = () => {
+    const a = idle.find(x => x.name === f.agent.value);
+    const def = a.model ? `기본값 (${a.provider} / ${a.model})` : `기본값 없음 — 모델을 고르세요`;
+    f.model.replaceChildren(opt("", def), ...state.models.map(m => opt(m.name, `${m.name} (${m.provider} / ${m.model})`)));
+    f.model.required = !a.model;
+  };
+  f.agent.onchange = fillModels; fillModels();
+  dlg.showModal();
+}
 
 async function send() {
   const text = $("#input").value.trim();
   if (!text) return;
   if (!selected.size) return toast("메시지를 받을 에이전트를 체크하세요.");
   const r = await api("/api/send", { names: [...selected], text });
-  if (r.ok) $("#input").value = "";
+  if (r.ok) { $("#input").value = ""; autosize(); }
   refresh();
 }
+function autosize() { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; }
+
 if ($("#running")) {
+  const dlg = $("#start-dialog");
+  $("#open-start").onclick = openStart;
   $("#send").onclick = send;
+  $("#input").addEventListener("input", autosize);
   $("#input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
   dlg.querySelector("[value=cancel]").onclick = () => dlg.close();
   dlg.querySelector("form").onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target;
-    const r = await api("/api/start", { name: starting.name, workspace: f.workspace.value, model: f.model.value });
-    if (r.ok) { selected.add(starting.name); dlg.close(); }
+    const r = await api("/api/start", { name: f.agent.value, workspace: f.workspace.value, model: f.model.value });
+    if (r.ok) { selected.add(f.agent.value); dlg.close(); }
     refresh();
   };
 }
 
-refresh(); setInterval(refresh, 1000);
+// ---------- agents page ----------
+
+function renderAgents() {
+  const f = $("#agent-form");
+  const keep = f.model.value;
+  f.model.replaceChildren(opt("", state.models.length ? "모델 선택" : "먼저 모델 메뉴에서 모델을 만드세요"),
+    ...state.models.map(m => opt(m.name, `${m.name} (${m.provider} / ${m.model})`, m.name === keep)));
+  const box = $("#tool-list");
+  if (!box.children.length) for (const t of state.tools) {
+    const l = el("label", "check"), cb = el("input"); cb.type = "checkbox"; cb.name = "tools"; cb.value = t; cb.defaultChecked = true;
+    l.append(cb, el("span", null, t)); box.append(l);
+  }
+  const list = $("#agent-list"); list.replaceChildren();
+  for (const a of state.available) {
+    const sub = `${a.custom ? a.preset : "agents/" + a.name + ".py"} · ${a.provider} / ${a.model ?? "모델 미지정"}`;
+    list.append(a.custom
+      ? row(a.name, sub, button("편집", () => editAgent(a)), button("삭제", async () => {
+          if (confirm(`${a.name} 에이전트를 삭제할까요?`)) { await api("/api/agents/delete", { name: a.name }); refresh(); }
+        }, "ghost danger"))
+      : row(a.name, sub, el("span", "badge", "파일")));
+  }
+  emptyNote(list, "에이전트가 없습니다.");
+}
+
+function editAgent(a) {
+  const f = $("#agent-form");
+  $("#agent-form-title").textContent = `편집: ${a.name}`;
+  f.name.value = a.name; f.model.value = a.preset; f.system.value = a.system || "";
+  for (const cb of f.querySelectorAll("[name=tools]")) cb.checked = (a.tools || []).includes(cb.value);
+  f.name.focus();
+}
+
+if ($("#agent-form")) {
+  const f = $("#agent-form");
+  f.onreset = () => { $("#agent-form-title").textContent = "새 에이전트"; };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const tools = [...f.querySelectorAll("[name=tools]:checked")].map(cb => cb.value);
+    const r = await api("/api/agents", { name: f.name.value, model: f.model.value, system: f.system.value, tools });
+    if (r.ok) { toast(`${f.name.value} 저장됨`, true); f.reset(); }
+    refresh();
+  };
+}
+
+// ---------- models page ----------
+
+function renderModels() {
+  const f = $("#model-form");
+  if (!f.provider.options.length) {
+    f.provider.append(...Object.entries(state.providers).map(([n, p]) => opt(n, `${n}${p.default ? ` (기본 ${p.default})` : ""}`)));
+    f.provider.dispatchEvent(new Event("change"));
+  }
+  const list = $("#model-list"); list.replaceChildren();
+  for (const m of state.models) {
+    const users = state.available.filter(a => a.custom && a.preset === m.name).map(a => a.name);
+    list.append(row(m.name, `${m.provider} / ${m.model}${users.length ? ` · 사용: ${users.join(", ")}` : ""}`,
+      button("편집", () => { f.name.value = m.name; f.provider.value = m.provider; f.provider.dispatchEvent(new Event("change")); f.model.value = m.model; }),
+      button("삭제", async () => { await api("/api/models/delete", { name: m.name }); refresh(); }, "ghost danger")));
+  }
+  emptyNote(list, "저장한 모델이 없습니다.");
+}
+
+if ($("#model-form")) {
+  const f = $("#model-form"), dl = $("#provider-models"), cache = {};
+  f.provider.onchange = () => {
+    const p = state.providers[f.provider.value];
+    f.model.placeholder = p.default || "모델 ID";
+    dl.replaceChildren();
+  };
+  f.model.onfocus = async () => {
+    const p = f.provider.value;
+    cache[p] ??= api(`/api/models?provider=${encodeURIComponent(p)}`);
+    const ids = await cache[p];
+    if (f.provider.value === p) dl.replaceChildren(...(Array.isArray(ids) ? ids : []).map(id => opt(id)));
+  };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const r = await api("/api/models", { name: f.name.value, provider: f.provider.value, model: f.model.value });
+    if (r.ok) { toast(`${f.name.value} 저장됨`, true); f.name.value = f.model.value = ""; }
+    refresh();
+  };
+}
+
+// ---------- workspaces page ----------
+
+function renderWorkspaces() {
+  const list = $("#workspace-list"); list.replaceChildren();
+  for (const w of state.workspaces) {
+    const sub = `workspaces/${w.name}/ · 항목 ${w.files}개${w.agents.length ? ` · 실행 중: ${w.agents.join(", ")}` : ""}`;
+    list.append(row(w.name, sub, button("삭제", async () => {
+      if (!confirm(`${w.name} 워크스페이스와 안의 파일 ${w.files}개를 모두 지울까요? 되돌릴 수 없습니다.`)) return;
+      await api("/api/workspaces/delete", { name: w.name }); refresh();
+    }, "ghost danger")));
+  }
+  emptyNote(list, "워크스페이스가 없습니다.");
+}
+
+if ($("#workspace-form")) {
+  $("#workspace-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target, r = await api("/api/workspaces", { name: f.name.value });
+    if (r.ok) { toast(`${f.name.value} 만듦`, true); f.reset(); }
+    refresh();
+  };
+}
+
+// ---------- API keys page ----------
+
+function renderKeys() {
+  const box = $("#keys");
+  for (const [k, set] of Object.entries(state.keys)) {
+    let r = box.querySelector(`[data-key="${k}"]`);
+    if (!r) {  // build once, so refreshes don't wipe what's being typed
+      const providers = Object.entries(state.providers).filter(([, p]) => p.key === k).map(([n]) => n).join(", ");
+      const input = el("input"); input.type = "password"; input.autocomplete = "off"; input.setAttribute("aria-label", k);
+      const form = el("form", "inline");
+      form.append(input, el("button", "primary", "저장"));
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        const res = await api("/api/key", { env: k, value: input.value });
+        if (res.ok) { input.value = ""; toast(`${k} 저장됨`, true); }
+        refresh();
+      };
+      r = row(k, providers, form); r.dataset.key = k;
+      r.querySelector(".meta b").prepend(el("span", "dot"));
+      box.append(r);
+    }
+    r.querySelector(".dot").classList.toggle("off", !set);
+    r.querySelector("input").placeholder = set ? "설정됨 · 비우고 저장 = 삭제" : "키 입력";
+  }
+}
+
+// ---------- refresh ----------
+
+async function refresh() {
+  try { state = await api("/api/state"); } catch (e) { return; /* server restarting */ }
+  if (!state.running) return;
+  if ($("#running")) renderRunning();
+  if ($("#agent-form")) renderAgents();
+  if ($("#model-form")) renderModels();
+  if ($("#workspace-form")) renderWorkspaces();
+  if ($("#keys")) renderKeys();
+}
+
+refresh();
+if ($("#running")) setInterval(refresh, 1000);  // management pages refresh after each action instead

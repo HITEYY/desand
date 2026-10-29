@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}에이전트{% endblock %}
+{% block content %}
+<header class="topbar"><div><h1>에이전트</h1><p class="muted">저장한 모델 + 시스템 프롬프트 + 도구로 에이전트를 만듭니다.</p></div></header>
+<div class="manage">
+  <form class="panel" id="agent-form">
+    <h2 id="agent-form-title">새 에이전트</h2>
+    <label>이름 <input name="name" required pattern="[\w\-][\w.\-]*" placeholder="my-agent"></label>
+    <label>모델 <select name="model" required></select></label>
+    <label>시스템 프롬프트 <textarea name="system" rows="6" placeholder="비우면 기본 프롬프트"></textarea></label>
+    <fieldset><legend>도구</legend><div id="tool-list" class="checks"></div>
+      <p class="hint">web_search / web_fetch 는 anthropic provider 모델 전용.</p></fieldset>
+    <div class="actions"><button type="reset" class="ghost">새로 작성</button><button class="primary">저장</button></div>
+  </form>
+  <section><h2>목록</h2><div id="agent-list" class="list"></div></section>
+</div>
+{% endblock %}

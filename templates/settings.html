@@ -1,19 +1,6 @@
-<!doctype html>
-<html lang="ko">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Settings · Agent Panel</title>
-<link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
-</head>
-<body class="page">
-<div class="settings">
-  <a class="nav" href="/">← Agent Panel</a>
-  <h1>Settings</h1>
-  <h2>API Keys</h2>
-  <div id="keys"></div>
-</div>
-<div id="toast" popover="manual"></div>
-<script src="{{ url_for('static', path='panel.js') }}"></script>
-</body>
-</html>
+{% extends "base.html" %}
+{% block title %}API 키{% endblock %}
+{% block content %}
+<header class="topbar"><div><h1>API 키</h1><p class="muted">서버 메모리에만 저장되어 재시작하면 사라집니다. 실행 중인 에이전트는 다시 시작해야 새 키를 씁니다.</p></div></header>
+<div class="manage single"><div id="keys" class="list"></div></div>
+{% endblock %}

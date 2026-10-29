@@ -14,6 +14,9 @@ import openai
 from anthropic import beta_tool
 
 WORKSPACES = Path.cwd().resolve() / "workspaces"  # one folder per workspace; agents never see outside theirs
+# Models and agents created in the web panel. Next to workspaces/, not inside, so panel agents can't read it.
+CONFIG = Path.cwd().resolve() / "panel.json"
+_config_lock = threading.Lock()
 # Working dir for file tools, set per agent turn in ask() (tools run on the agent's own thread). CLI: cwd.
 _root = contextvars.ContextVar("root", default=Path.cwd().resolve())
 LOG_DIR = Path(__file__).parent / "trajectories"
@@ -190,6 +193,7 @@ WEB_TOOLS = [
     {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5},
 ]
 _SERVER_TOOL_PARAMS = {"web_search": {"query": "string"}, "web_fetch": {"url": "string"}}  # for trajectory schemas
+TOOL_BY_NAME = {t["name"] if isinstance(t, dict) else t.name: t for t in [*TOOLS, *WEB_TOOLS]}
 DEFAULT_SYSTEM = "You are a helpful assistant. Use the tools when they help. Answer in the user's language."
 
 
@@ -284,8 +288,9 @@ def run_turn_openai(agent, messages: list) -> None:
     tool_map = {t.name: t for t in agent.tools}
     schemas = openai_tools(agent.tools)
     while True:
-        resp = agent.client.chat.completions.create(
-            model=agent.model, messages=[{"role": "system", "content": agent.system}, *messages], tools=schemas,
+        resp = agent.client.chat.completions.create(  # an empty tools list is rejected, so omit it
+            model=agent.model, messages=[{"role": "system", "content": agent.system}, *messages],
+            **({"tools": schemas} if schemas else {}),
         )
         msg = resp.choices[0].message
         messages.append(msg.model_dump(exclude_none=True))
@@ -317,15 +322,54 @@ def make_client(name: str):
 
 def workspace_dir(name: str) -> Path:
     """workspaces/<name>, created if missing. Plain names only, so workspaces can't nest or overlap."""
-    if not re.fullmatch(r"[\w-][\w.-]*", name):
+    if not valid_name(name):
         raise SystemExit(f"bad workspace name: {name!r} (letters, digits, - _ . only)")
     p = WORKSPACES / name
     p.mkdir(parents=True, exist_ok=True)
     return p.resolve()
 
 
+def valid_name(name: str) -> bool:
+    return bool(re.fullmatch(r"[\w-][\w.-]*", name))
+
+
+def load_config() -> dict:
+    """panel.json: {"models": {name: {provider, model}}, "agents": {name: {model, system, tools}}}."""
+    try:
+        cfg = json.loads(CONFIG.read_text())
+    except FileNotFoundError:
+        cfg = {}
+    return {"models": cfg.get("models", {}), "agents": cfg.get("agents", {})}
+
+
+def update_config(change) -> None:
+    """Read-modify-write panel.json under a lock; change(cfg) mutates cfg or raises to abort."""
+    with _config_lock:
+        cfg = load_config()
+        change(cfg)
+        CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+
+
+def file_agents() -> list:
+    return sorted(p.stem for p in (Path(__file__).parent / "agents").glob("*.py") if p.stem != "__init__")
+
+
 def agent_defaults(name: str):
-    """agents/<name>.py module, its provider, and its default model (None if it must be chosen)."""
+    """Agent definition (module-like: SYSTEM, TOOLS), its provider, and default model (None if it must be chosen).
+
+    Panel-made agents (panel.json) point at a saved model; file agents are agents/<name>.py.
+    """
+    cfg = load_config()
+    custom = cfg["agents"].get(name)
+    if custom:
+        m = cfg["models"].get(custom["model"])
+        if not m:
+            raise SystemExit(f"agent '{name}': model '{custom['model']}' no longer exists")
+        mod = SimpleNamespace(SYSTEM=custom.get("system") or DEFAULT_SYSTEM,
+                              TOOLS=[TOOL_BY_NAME[t] for t in custom.get("tools", []) if t in TOOL_BY_NAME])
+        return mod, m["provider"], m["model"]
+    if name not in file_agents():
+        raise SystemExit(f"unknown agent: {name}")
     mod = importlib.import_module(f"agents.{name}")
     provider = getattr(mod, "PROVIDER", "anthropic")
     return mod, provider, getattr(mod, "MODEL", None) or PROVIDERS[provider]["model"]
@@ -340,12 +384,15 @@ def list_models(provider: str) -> list:
         return []
 
 
-def load_agent(name: str, model: str | None = None, workspace: str | None = None):
-    """Build a runnable agent from agents/<name>.py (PROVIDER, MODEL, SYSTEM, TOOLS; all optional).
+def load_agent(name: str, model: str | None = None, workspace: str | None = None, provider: str | None = None):
+    """Build a runnable agent from agents/<name>.py (PROVIDER, MODEL, SYSTEM, TOOLS; all optional) or panel.json.
 
-    model overrides the file's MODEL; workspace confines its file tools to workspaces/<workspace> (default: cwd).
+    provider/model override the definition's; workspace confines file tools to workspaces/<workspace> (default: cwd).
     """
-    mod, provider, default_model = agent_defaults(name)
+    mod, default_provider, default_model = agent_defaults(name)
+    if provider and provider != default_provider:
+        default_model = None  # the definition's model belongs to its own provider
+    provider = provider or default_provider
     model = model or default_model
     if not model:
         raise SystemExit(f"agents/{name}.py: set MODEL (provider '{provider}' has no default)")

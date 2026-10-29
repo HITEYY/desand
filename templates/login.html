@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로그인 · Agent Panel</title>
+<link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+</head>
+<body class="login-body">
+<form class="login-card" id="login">
+  <div class="brand"><span class="logo">◆</span> Agent Panel</div>
+  <p class="muted">서버 터미널에 출력된 비밀번호 또는 <code>PANEL_PASSWORD</code> 값을 입력하세요.</p>
+  <label>비밀번호 <input type="password" name="password" autocomplete="current-password" required autofocus></label>
+  <p class="error" id="login-error" hidden></p>
+  <button class="primary">로그인</button>
+</form>
+<script>
+document.querySelector("#login").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = e.target, err = document.querySelector("#login-error");
+  f.querySelector("button").disabled = true;
+  const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ password: f.password.value }) });
+  f.querySelector("button").disabled = false;
+  if (r.ok) return location.replace("/");
+  err.textContent = (await r.json()).error || r.statusText; err.hidden = false; f.password.select();
+};
+</script>
+</body>
+</html>

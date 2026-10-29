@@ -1,54 +1,32 @@
 """Web panel for starting, chatting with, and stopping agents. Run: python server.py  ->  http://127.0.0.1:8000"""
 import os
 import secrets
+import shutil
 import threading
+import time
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import APIRouter, Cookie, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from core import PROVIDERS, WORKSPACES, agent_defaults, ask, list_models, load_agent, to_openai_messages
+from core import (PROVIDERS, TOOL_BY_NAME, WEB_TOOLS, WORKSPACES, agent_defaults, ask, file_agents, list_models,
+                  load_agent, load_config, to_openai_messages, update_config, valid_name, workspace_dir)
 
 HERE = Path(__file__).parent
 running = {}  # name -> agent
 lock = threading.Lock()
 PASSWORD = os.environ.get("PANEL_PASSWORD") or secrets.token_urlsafe(16)  # random per run if unset; printed at startup
+SESSION = secrets.token_urlsafe(32)  # login cookie value; a restart logs everyone out
+WEB_TOOL_NAMES = {t["name"] for t in WEB_TOOLS}
 
 
-def auth(creds: HTTPBasicCredentials = Depends(HTTPBasic())) -> None:
-    # Browser shows its own login prompt and resends the credentials on every fetch; any username works.
-    # Also stops DNS rebinding: a hostname another site controls never gets this origin's credentials.
-    if not secrets.compare_digest(creds.password.encode(), PASSWORD.encode()):
-        raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Basic"})
-
-
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, dependencies=[Depends(auth)])  # static files stay public
-app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
-templates = Jinja2Templates(directory=HERE / "templates")
-
-
-class Name(BaseModel):
-    name: str
-
-
-class Start(BaseModel):
-    name: str
-    workspace: str
-    model: str = ""
-
-
-class Key(BaseModel):
-    env: str
-    value: str
-
-
-class Message(BaseModel):
-    names: list[str]
-    text: str
+def auth(panel_session: str = Cookie("")) -> None:
+    # The cookie is bound to this host, so a DNS-rebinding hostname never carries it.
+    if not secrets.compare_digest(panel_session.encode(), SESSION.encode()):
+        raise HTTPException(401, "login required")
 
 
 def json_only(request: Request) -> None:
@@ -57,18 +35,65 @@ def json_only(request: Request) -> None:
         raise HTTPException(403, "forbidden")
 
 
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")  # static files stay public
+templates = Jinja2Templates(directory=HERE / "templates")
+api = APIRouter(dependencies=[Depends(auth)])
+
+
 @app.exception_handler(HTTPException)
-def http_error(request: Request, exc: HTTPException) -> JSONResponse:
-    return JSONResponse({"error": exc.detail}, exc.status_code, headers=exc.headers)  # keep WWW-Authenticate
+def http_error(request: Request, exc: HTTPException):
+    if exc.status_code == 401 and not request.url.path.startswith("/api/"):
+        return RedirectResponse("/login", 303)
+    return JSONResponse({"error": exc.detail}, exc.status_code, headers=exc.headers)
+
+
+class Name(BaseModel):
+    name: str
+
+
+class Login(BaseModel):
+    password: str
+
+
+class Start(BaseModel):
+    name: str
+    workspace: str
+    model: str = ""  # saved model name; empty = the agent's own default
+
+
+class Key(BaseModel):
+    env: str
+    value: str
+
+
+class Model(BaseModel):
+    name: str
+    provider: str
+    model: str
+
+
+class Agent(BaseModel):
+    name: str
+    model: str
+    system: str = ""
+    tools: list[str] = []
+
+
+class Message(BaseModel):
+    names: list[str]
+    text: str
 
 
 def available() -> list:
-    return sorted(p.stem for p in (HERE / "agents").glob("*.py") if p.stem != "__init__")
+    return sorted({*file_agents(), *load_config()["agents"]})
 
 
-def agent_info(name: str) -> dict:
+def agent_info(name: str, cfg: dict) -> dict:
     _, provider, model = agent_defaults(name)
-    return {"name": name, "provider": provider, "model": model}
+    custom = cfg["agents"].get(name) or {}
+    return {"name": name, "provider": provider, "model": model, "custom": bool(custom),
+            "preset": custom.get("model"), "system": custom.get("system", ""), "tools": custom.get("tools", [])}
 
 
 def workspaces() -> list:
@@ -92,43 +117,175 @@ def send(a, text: str) -> None:
         a.busy = False
 
 
-@app.get("/")
-def index(request: Request):
-    return templates.TemplateResponse(request, "index.html", {"available": available()})
+def bad(msg: str):
+    raise HTTPException(400, msg)
 
 
-@app.get("/settings")
-def settings(request: Request):
-    return templates.TemplateResponse(request, "settings.html")
+# --- login (public) ---
+
+@app.get("/login")
+def login_page(request: Request):
+    return templates.TemplateResponse(request, "login.html")
 
 
-@app.get("/api/state")
+@app.post("/api/login", dependencies=[Depends(json_only)])
+def login(body: Login, response: Response) -> dict:
+    if not secrets.compare_digest(body.password.encode(), PASSWORD.encode()):
+        time.sleep(1)  # ponytail: per-request delay only; add per-IP lockout if exposed to the internet
+        raise HTTPException(401, "비밀번호가 틀렸습니다")
+    response.set_cookie("panel_session", SESSION, httponly=True, samesite="strict", max_age=30 * 86400)
+    return {"ok": True}
+
+
+@app.post("/api/logout", dependencies=[Depends(json_only)])
+def logout(response: Response) -> dict:
+    response.delete_cookie("panel_session")
+    return {"ok": True}
+
+
+# --- pages ---
+
+PAGES = {"/": "index.html", "/agents": "agents.html", "/models": "models.html",
+         "/workspaces": "workspaces.html", "/settings": "settings.html"}
+
+
+def page(template: str):
+    def render(request: Request):
+        return templates.TemplateResponse(request, template, {"path": request.url.path})
+    return render
+
+
+for _path, _template in PAGES.items():
+    api.add_api_route(_path, page(_template), methods=["GET"], include_in_schema=False)
+
+
+# --- state ---
+
+@api.get("/api/state")
 def state() -> dict:
     with lock:
         agents = list(running.values())
-    return {"available": [agent_info(n) for n in available()], "workspaces": workspaces(),
-            "running": [view(a) for a in agents],
+    cfg = load_config()
+    return {"available": [agent_info(n, cfg) for n in available()], "running": [view(a) for a in agents],
+            "workspaces": [{"name": w, "files": sum(1 for _ in (WORKSPACES / w).iterdir()),
+                            "agents": [a.name for a in agents if a.workspace == w]} for w in workspaces()],
+            "models": [{"name": n, **m} for n, m in sorted(cfg["models"].items())],
+            "providers": {n: {"default": p["model"], "key": p["key_env"]} for n, p in PROVIDERS.items()},
+            "tools": list(TOOL_BY_NAME), "web_tools": sorted(WEB_TOOL_NAMES),
             "keys": {k: bool(os.environ.get(k)) for k in key_names()}}  # set/unset only, never the value
 
 
-@app.get("/api/models")
-def models(provider: str) -> list:
+@api.get("/api/models")
+def provider_models(provider: str) -> list:
     if provider not in PROVIDERS:
-        raise HTTPException(400, f"unknown provider: {provider}")
+        bad(f"unknown provider: {provider}")
     return list_models(provider)
 
 
-@app.post("/api/start", dependencies=[Depends(json_only)])
+# --- models ---
+
+@api.post("/api/models", dependencies=[Depends(json_only)])
+def save_model(body: Model) -> dict:
+    name, model = body.name.strip(), body.model.strip()
+    if not valid_name(name):
+        bad("이름은 글자·숫자·- _ . 만")
+    if body.provider not in PROVIDERS:
+        bad(f"unknown provider: {body.provider}")
+    if not model:
+        bad("모델 ID를 입력하세요")
+
+    def change(cfg):
+        users = [a for a, d in cfg["agents"].items() if d["model"] == name]
+        if body.provider != "anthropic" and any(set(cfg["agents"][a].get("tools", [])) & WEB_TOOL_NAMES for a in users):
+            bad("웹 도구를 쓰는 에이전트가 이 모델을 사용 중이라 provider는 anthropic이어야 합니다")
+        cfg["models"][name] = {"provider": body.provider, "model": model}
+    update_config(change)
+    return {"ok": True}
+
+
+@api.post("/api/models/delete", dependencies=[Depends(json_only)])
+def delete_model(body: Name) -> dict:
+    def change(cfg):
+        users = [a for a, d in cfg["agents"].items() if d["model"] == body.name]
+        if users:
+            bad(f"사용 중인 에이전트가 있습니다: {', '.join(users)}")
+        cfg["models"].pop(body.name, None)
+    update_config(change)
+    return {"ok": True}
+
+
+# --- agents ---
+
+@api.post("/api/agents", dependencies=[Depends(json_only)])
+def save_agent(body: Agent) -> dict:
+    name = body.name.strip()
+    if not valid_name(name):
+        bad("이름은 글자·숫자·- _ . 만")
+    if name in file_agents():
+        bad(f"agents/{name}.py 와 이름이 겹칩니다")
+    if unknown := set(body.tools) - set(TOOL_BY_NAME):
+        bad(f"unknown tools: {', '.join(sorted(unknown))}")
+
+    def change(cfg):
+        m = cfg["models"].get(body.model)
+        if not m:
+            bad("모델을 고르세요")
+        if set(body.tools) & WEB_TOOL_NAMES and m["provider"] != "anthropic":
+            bad("web_search / web_fetch 는 anthropic provider 모델에서만 됩니다")
+        cfg["agents"][name] = {"model": body.model, "system": body.system.strip(), "tools": body.tools}
+    update_config(change)
+    return {"ok": True}  # a running copy keeps its old definition until restarted
+
+
+@api.post("/api/agents/delete", dependencies=[Depends(json_only)])
+def delete_agent(body: Name) -> dict:
+    update_config(lambda cfg: cfg["agents"].pop(body.name, None))
+    return {"ok": True}
+
+
+# --- workspaces ---
+
+@api.post("/api/workspaces", dependencies=[Depends(json_only)])
+def create_workspace(body: Name) -> dict:
+    name = body.name.strip()
+    if not valid_name(name):
+        bad("이름은 글자·숫자·- _ . 만")
+    if (WORKSPACES / name).exists():
+        bad("이미 있는 워크스페이스입니다")
+    workspace_dir(name)
+    return {"ok": True}
+
+
+@api.post("/api/workspaces/delete", dependencies=[Depends(json_only)])
+def delete_workspace(body: Name) -> dict:
+    if body.name not in workspaces():
+        bad("없는 워크스페이스입니다")
+    with lock:
+        if any(a.workspace == body.name for a in running.values()):
+            bad("이 워크스페이스에서 실행 중인 에이전트를 먼저 멈추세요")
+        shutil.rmtree(WORKSPACES / body.name)
+    return {"ok": True}
+
+
+# --- running agents ---
+
+@api.post("/api/start", dependencies=[Depends(json_only)])
 def start(body: Start) -> dict:
+    if body.workspace not in workspaces():
+        bad("워크스페이스를 고르세요")
+    provider = model = None
+    if body.model:
+        m = load_config()["models"].get(body.model) or bad(f"unknown model: {body.model}")
+        provider, model = m["provider"], m["model"]
     with lock:
         if body.name not in available():
-            raise HTTPException(400, f"unknown agent: {body.name}")
+            bad(f"unknown agent: {body.name}")
         if body.name in running:
-            raise HTTPException(400, f"{body.name} already running")
+            bad(f"{body.name} already running")
         try:
-            agent = load_agent(body.name, model=body.model.strip() or None, workspace=body.workspace.strip())
+            agent = load_agent(body.name, model=model, workspace=body.workspace, provider=provider)
         except BaseException as e:  # load_agent uses SystemExit for missing keys/models
-            raise HTTPException(400, str(e))
+            bad(str(e))
         agent.busy = False
         running[body.name] = agent
     return {"ok": True}
@@ -136,10 +293,10 @@ def start(body: Start) -> dict:
 
 # ponytail: keys live in this process's env only (lost on restart); not written to disk because
 # agents' file tools can read the working directory. Running agents keep their old key until restarted.
-@app.post("/api/key", dependencies=[Depends(json_only)])
+@api.post("/api/key", dependencies=[Depends(json_only)])
 def set_key(body: Key) -> dict:
     if body.env not in key_names():
-        raise HTTPException(400, f"unknown key: {body.env}")
+        bad(f"unknown key: {body.env}")
     value = body.value.strip()
     if value:
         os.environ[body.env] = value
@@ -148,14 +305,14 @@ def set_key(body: Key) -> dict:
     return {"ok": True}
 
 
-@app.post("/api/stop", dependencies=[Depends(json_only)])
+@api.post("/api/stop", dependencies=[Depends(json_only)])
 def stop(body: Name) -> dict:
     with lock:
         running.pop(body.name, None)  # an in-flight turn finishes in the background
     return {"ok": True}
 
 
-@app.post("/api/reset", dependencies=[Depends(json_only)])
+@api.post("/api/reset", dependencies=[Depends(json_only)])
 def reset(body: Name) -> dict:
     with lock:
         if body.name in running and not running[body.name].busy:
@@ -163,23 +320,26 @@ def reset(body: Name) -> dict:
     return {"ok": True}
 
 
-@app.post("/api/send", dependencies=[Depends(json_only)])
+@api.post("/api/send", dependencies=[Depends(json_only)])
 def send_message(body: Message) -> dict:
     text = body.text.strip()
     with lock:
         targets = [running[n] for n in body.names if n in running and not running[n].busy]
         if not text or not targets:
-            raise HTTPException(400, "need text and at least one idle running agent")
+            bad("need text and at least one idle running agent")
         for a in targets:
             a.busy = True  # mark now so a quick second send can't double-start the agent
             threading.Thread(target=send, args=(a, text), daemon=True).start()
     return {"ok": True}
 
 
+app.include_router(api)
+
 if __name__ == "__main__":
     import uvicorn
 
-    # Agents can read/write files in the working directory; the password is the only gate, over plain HTTP.
+    workspace_dir("default")  # so the start dialog always has a workspace
+    # Agents can read/write files in their workspace; the password is the only gate, over plain HTTP.
     host = os.environ.get("HOST", "0.0.0.0")  # HOST=127.0.0.1 for this machine only
     print(f"Agent panel: http://127.0.0.1:8000 (listening on {host}:8000)")
     if not os.environ.get("PANEL_PASSWORD"):

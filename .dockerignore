@@ -4,3 +4,5 @@
 __pycache__
 trajectories
 *.md
+panel.json
+workspaces

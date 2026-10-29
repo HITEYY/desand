@@ -1,36 +1,23 @@
-<!doctype html>
-<html lang="ko">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent Panel</title>
-<link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
-</head>
-<body>
-<aside>
-  <h1>Agent Panel</h1>
-  <h2>Agents</h2>
-  <div id="available">
-    {% for name in available %}<button class="avail" disabled><span>{{ name }}</span></button>
-    {% endfor %}
-  </div>
-  <a class="nav" href="/settings">⚙ Settings</a>
-</aside>
-<main id="running"><p class="empty">왼쪽에서 에이전트를 시작하세요.</p></main>
-<footer>
-  <textarea id="input" placeholder="체크된 에이전트에게 보낼 메시지 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
-  <button class="primary" id="send">Send</button>
+{% extends "base.html" %}
+{% block title %}대화{% endblock %}
+{% block content %}
+<header class="topbar">
+  <div><h1>대화</h1><p class="muted">체크한 에이전트들에게 같은 메시지를 동시에 보냅니다.</p></div>
+  <button class="primary" id="open-start">+ 에이전트 시작</button>
+</header>
+<main id="running" class="cards"></main>
+<footer class="composer">
+  <textarea id="input" rows="1" placeholder="메시지 입력 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
+  <button class="primary" id="send">보내기</button>
 </footer>
 <dialog id="start-dialog">
   <form>
-    <h3></h3>
-    <label>Workspace <input name="workspace" required value="default" list="workspaces"></label>
-    <label>Model <input name="model"></label>
-    <div class="actions"><button type="button" value="cancel">Cancel</button><button class="primary">Start</button></div>
+    <h3>에이전트 시작</h3>
+    <label>에이전트 <select name="agent" required></select></label>
+    <label>워크스페이스 <select name="workspace" required></select></label>
+    <label>모델 <select name="model"></select></label>
+    <p class="hint">모델·에이전트·워크스페이스는 왼쪽 메뉴에서 만들 수 있습니다.</p>
+    <div class="actions"><button type="button" value="cancel">취소</button><button class="primary">시작</button></div>
   </form>
 </dialog>
-<datalist id="workspaces"></datalist>
-<div id="toast" popover="manual"></div>
-<script src="{{ url_for('static', path='panel.js') }}"></script>
-</body>
-</html>
+{% endblock %}

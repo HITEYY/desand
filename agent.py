@@ -1,4 +1,4 @@
-"""Run one or more agents (agents/<name>.py) in parallel, each with its own memory.
+"""Run one or more agents (agents/<name>.py or made in the web panel) in parallel, each with its own memory.
 
   python agent.py                         # chat with agents/default.py
   python agent.py -a researcher -a writer # every message goes to both, in parallel
@@ -6,9 +6,8 @@
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
-from core import ask, load_agent
+from core import ask, file_agents, load_agent, load_config
 
 
 def broadcast(agents, text: str) -> None:
@@ -18,13 +17,13 @@ def broadcast(agents, text: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("-a", "--agent", action="append", help="agent file name in agents/ (repeatable)")
+    ap.add_argument("-a", "--agent", action="append", help="agent name (repeatable)")
     ap.add_argument("--list", action="store_true", help="list available agents")
     ap.add_argument("prompt", nargs="?", help="run once with this prompt instead of chatting")
     args = ap.parse_args()
 
     if args.list:
-        print("\n".join(sorted(p.stem for p in Path("agents").glob("*.py") if p.stem != "__init__")))
+        print("\n".join(sorted({*file_agents(), *load_config()["agents"]})))
         return
     agents = [load_agent(n) for n in dict.fromkeys(args.agent or ["default"])]
     if args.prompt:

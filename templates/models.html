@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}모델{% endblock %}
+{% block content %}
+<header class="topbar"><div><h1>모델</h1><p class="muted">provider + 모델 ID 조합에 이름을 붙여 저장합니다. 에이전트를 만들거나 시작할 때 고릅니다.</p></div></header>
+<div class="manage">
+  <form class="panel" id="model-form">
+    <h2>새 모델</h2>
+    <label>이름 <input name="name" required pattern="[\w\-][\w.\-]*" placeholder="fast"></label>
+    <label>Provider <select name="provider" required></select></label>
+    <label>모델 ID <input name="model" required list="provider-models" autocomplete="off"></label>
+    <datalist id="provider-models"></datalist>
+    <p class="hint">입력칸을 누르면 provider가 알려주는 모델 목록이 뜹니다 (API 키 필요). 같은 이름으로 저장하면 덮어씁니다.</p>
+    <div class="actions"><button class="primary">저장</button></div>
+  </form>
+  <section><h2>목록</h2><div id="model-list" class="list"></div></section>
+</div>
+{% endblock %}

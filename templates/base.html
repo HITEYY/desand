@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{% endblock %} · Agent Panel</title>
+<link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+</head>
+<body>
+<nav class="sidebar">
+  <div class="brand"><span class="logo">◆</span> Agent Panel</div>
+  {% set links = [("/", "대화"), ("/agents", "에이전트"), ("/models", "모델"), ("/workspaces", "워크스페이스"), ("/settings", "API 키")] %}
+  <ul>
+    {% for href, label in links %}<li><a href="{{ href }}"{% if path == href %} aria-current="page"{% endif %}>{{ label }}</a></li>
+    {% endfor %}
+  </ul>
+  <button class="ghost logout" id="logout">로그아웃</button>
+</nav>
+<div class="content">{% block content %}{% endblock %}</div>
+<div id="toast" popover="manual"></div>
+<script src="{{ url_for('static', path='panel.js') }}"></script>
+</body>
+</html>
