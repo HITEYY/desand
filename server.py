@@ -1,5 +1,6 @@
 """Web panel for starting, chatting with, and stopping agents. Run: python server.py  ->  http://127.0.0.1:8000"""
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -90,5 +91,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     # Local only: agents can read/write files in this directory and there is no auth.
-    print("Agent panel: http://127.0.0.1:8000")
-    ThreadingHTTPServer(("127.0.0.1", 8000), Handler).serve_forever()
+    # HOST=0.0.0.0 only inside a container, published to the host's loopback (see README).
+    host = os.environ.get("HOST", "127.0.0.1")
+    print(f"Agent panel: http://127.0.0.1:8000 (listening on {host})")
+    ThreadingHTTPServer((host, 8000), Handler).serve_forever()

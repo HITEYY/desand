@@ -51,6 +51,23 @@ python3 -m venv .venv
 
 서버를 재시작하면 실행 중이던 에이전트와 메모리는 사라집니다 (`trajectories/` 기록은 남음).
 
+### Docker
+
+`main` 푸시와 `v*` 태그마다 GitHub Actions가 이미지를 빌드해 GHCR에 올립니다 (`linux/amd64`, `linux/arm64`).
+
+```bash
+docker run --rm -p 127.0.0.1:8000:8000 \
+  -e ANTHROPIC_API_KEY \
+  -v "$PWD:/work" \
+  -v "$PWD/trajectories:/app/trajectories" \
+  ghcr.io/hiteyy/desand:latest
+```
+
+- `/work`: 에이전트 파일 도구가 접근하는 폴더 (작업할 폴더를 마운트)
+- `/app/trajectories`: 학습 데이터 저장 위치
+- 반드시 `127.0.0.1:8000:8000` 으로 publish 하세요. 패널은 인증이 없고, Host 헤더가 `localhost:8000`/`127.0.0.1:8000` 일 때만 동작합니다.
+- 태그: `latest`(main), `main`, `sha-<커밋>`, `v1.2.3` 태그 푸시 시 `1.2.3`·`1.2`
+
 ## 에이전트 만들기
 
 `agents/<이름>.py` 파일 하나를 만들면 됩니다. 모든 항목은 선택:
