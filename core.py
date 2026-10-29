@@ -1,7 +1,9 @@
 """Shared agent runtime: tools, providers, and the per-provider tool loops."""
+import contextvars
 import importlib
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +12,9 @@ import anthropic
 import openai
 from anthropic import beta_tool
 
-ROOT = Path.cwd().resolve()
+WORKSPACES = Path.cwd().resolve() / "workspaces"  # one folder per workspace; agents never see outside theirs
+# Working dir for file tools, set per agent turn in ask() (tools run on the agent's own thread). CLI: cwd.
+_root = contextvars.ContextVar("root", default=Path.cwd().resolve())
 LOG_DIR = Path(__file__).parent / "trajectories"
 SESSION = datetime.now().strftime("%Y%m%d-%H%M%S")
 
@@ -29,8 +33,9 @@ PROVIDERS = {
 
 
 def _safe(path: str) -> Path:
-    p = (ROOT / path).resolve()
-    if not p.is_relative_to(ROOT):
+    root = _root.get()
+    p = (root / path).resolve()  # resolve() follows symlinks, so a link can't escape the workspace either
+    if not p.is_relative_to(root):
         raise ValueError(f"path outside working dir: {path}")
     return p
 
@@ -191,7 +196,7 @@ def run_turn_openai(agent, messages: list) -> None:
             print(f"  [{agent.name}:tool] {tc.function.name}({tc.function.arguments})")
             try:
                 out = tool_map[tc.function.name].call(json.loads(tc.function.arguments or "{}"))
-            except Exception as e:  # bad args / unknown tool / path outside ROOT -> tell the model
+            except Exception as e:  # bad args / unknown tool / path outside workspace -> tell the model
                 out = f"error: {e}"
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(out)})
 
@@ -209,11 +214,38 @@ def make_client(name: str):
     return anthropic.Anthropic(api_key=key), run_turn_anthropic, extra
 
 
-def load_agent(name: str):
-    """Build a runnable agent from agents/<name>.py (PROVIDER, MODEL, SYSTEM, TOOLS; all optional)."""
+def workspace_dir(name: str) -> Path:
+    """workspaces/<name>, created if missing. Plain names only, so workspaces can't nest or overlap."""
+    if not re.fullmatch(r"[\w-][\w.-]*", name):
+        raise SystemExit(f"bad workspace name: {name!r} (letters, digits, - _ . only)")
+    p = WORKSPACES / name
+    p.mkdir(parents=True, exist_ok=True)
+    return p.resolve()
+
+
+def agent_defaults(name: str):
+    """agents/<name>.py module, its provider, and its default model (None if it must be chosen)."""
     mod = importlib.import_module(f"agents.{name}")
     provider = getattr(mod, "PROVIDER", "anthropic")
-    model = getattr(mod, "MODEL", None) or PROVIDERS[provider]["model"]
+    return mod, provider, getattr(mod, "MODEL", None) or PROVIDERS[provider]["model"]
+
+
+def list_models(provider: str) -> list:
+    """Model ids the provider reports; [] when the key is missing or the endpoint has no listing."""
+    try:
+        client = make_client(provider)[0]
+        return sorted(m.id for m in client.models.list())
+    except BaseException:  # make_client raises SystemExit for a missing key
+        return []
+
+
+def load_agent(name: str, model: str | None = None, workspace: str | None = None):
+    """Build a runnable agent from agents/<name>.py (PROVIDER, MODEL, SYSTEM, TOOLS; all optional).
+
+    model overrides the file's MODEL; workspace confines its file tools to workspaces/<workspace> (default: cwd).
+    """
+    mod, provider, default_model = agent_defaults(name)
+    model = model or default_model
     if not model:
         raise SystemExit(f"agents/{name}.py: set MODEL (provider '{provider}' has no default)")
     tools = getattr(mod, "TOOLS", TOOLS)
@@ -222,6 +254,7 @@ def load_agent(name: str):
     client, run, extra = make_client(provider)
     return SimpleNamespace(
         name=name, provider=provider, model=model, client=client, run=run, extra=extra,
+        workspace=workspace, root=_root.get() if workspace is None else workspace_dir(workspace),
         system=getattr(mod, "SYSTEM", DEFAULT_SYSTEM), tools=tools, messages=[], error=None,
     )
 
@@ -231,6 +264,7 @@ def ask(agent, text: str) -> None:
     start = len(agent.messages)
     agent.messages.append({"role": "user", "content": text})
     agent.error = None
+    _root.set(agent.root)  # only this thread's context: other agents keep their own workspace
     try:
         agent.run(agent, agent.messages)
     except Exception as e:  # one agent failing must not take down the others

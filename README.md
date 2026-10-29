@@ -6,7 +6,7 @@
 - 여러 에이전트에 같은 메시지를 병렬로 보냄, 에이전트마다 메모리 따로
 - Anthropic, OpenCode Go, OpenScale, Experiential 지원
 - 모든 대화를 OpenAI fine-tuning 형식으로 `trajectories/`에 저장
-- 로컬 웹 패널 (표준 라이브러리만 사용)
+- 로컬 웹 패널 (FastAPI + Jinja2 템플릿)
 
 ## 설치
 
@@ -44,7 +44,10 @@ python3 -m venv .venv
 .venv/bin/python server.py   # http://127.0.0.1:8000
 ```
 
-- 왼쪽에서 에이전트 Start
+- 왼쪽 **API Keys** 에서 키 입력 후 Save (점 초록 = 설정됨, 비우고 Save = 삭제). 서버 메모리에만 저장되어 재시작하면 사라지고, 이미 실행 중인 에이전트는 Stop → Start 해야 새 키를 씁니다
+- 왼쪽에서 에이전트 이름을 눌러 **Workspace** 와 **Model** 을 고른 뒤 Start
+  - Workspace: `workspaces/<이름>/` 폴더 (없으면 생성). 에이전트 파일 도구는 자기 workspace 밖(다른 workspace, 상위 폴더, 심볼릭 링크 너머)에 접근할 수 없습니다. 이름은 글자·숫자·`-` `_` `.` 만
+  - Model: 비우면 에이전트 파일의 `MODEL` (또는 provider 기본값). 입력칸을 누르면 provider가 알려주는 모델 목록이 뜸 (키 필요)
 - 카드의 체크박스로 메시지 받을 에이전트 선택 → 아래 입력창에서 전송 (Enter 전송, Shift+Enter 줄바꿈)
 - 카드마다 상태(작업 중/대기), 대화, 도구 호출, 에러 표시
 - Reset 으로 메모리 초기화, Stop 으로 종료
@@ -63,9 +66,9 @@ docker run --rm -p 127.0.0.1:8000:8000 \
   ghcr.io/hiteyy/desand:latest
 ```
 
-- `/work`: 에이전트 파일 도구가 접근하는 폴더 (작업할 폴더를 마운트)
+- `/work`: workspace 들이 `/work/workspaces/<이름>/` 에 생성됨 (CLI `agent.py` 는 `/work` 전체)
 - `/app/trajectories`: 학습 데이터 저장 위치
-- 반드시 `127.0.0.1:8000:8000` 으로 publish 하세요. 패널은 인증이 없고, Host 헤더가 `localhost:8000`/`127.0.0.1:8000` 일 때만 동작합니다.
+- 반드시 `127.0.0.1:<포트>:8000` 으로 publish 하세요. 패널은 인증이 없고, Host 헤더가 `localhost`/`127.0.0.1` 일 때만 동작합니다.
 - 태그: `latest`(main), `main`, `sha-<커밋>`, `v1.2.3` 태그 푸시 시 `1.2.3`·`1.2`
 
 ## 에이전트 만들기
@@ -121,7 +124,7 @@ jq -c . trajectories/*.json > train.jsonl
 ## 보안
 
 - 웹 패널은 `127.0.0.1`에만 열리고 인증이 없습니다. 외부 네트워크에 노출하지 마세요.
-- 다른 웹사이트가 패널을 조작하지 못하도록 JSON Content-Type과 Host 헤더를 검사합니다.
+- 다른 웹사이트가 패널을 조작하지 못하도록 POST는 JSON Content-Type만 받고, Host 헤더는 `localhost`/`127.0.0.1`만 허용합니다.
 - 파일 도구는 실행 폴더 밖 경로를 거부합니다.
 - `web` 에이전트는 웹 페이지 내용에 섞인 지시문(prompt injection)에 속아 파일을 쓸 수 있습니다. 걱정되면 `agents/web.py`에서 `write_file`을 빼세요.
 
@@ -130,7 +133,8 @@ jq -c . trajectories/*.json > train.jsonl
 ```
 core.py       도구, provider, 에이전트 실행 루프, 기록 저장
 agent.py      CLI (여러 에이전트 병렬 실행)
-server.py     웹 패널 API 서버
-panel.html    웹 패널 화면
+server.py     웹 패널 (FastAPI)
+templates/    패널 HTML 템플릿 (Jinja2)
+static/       패널 CSS, JS
 agents/       에이전트 정의 파일
 ```

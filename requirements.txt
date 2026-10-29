@@ -1,2 +1,5 @@
 anthropic>=2.3
 openai>=2
+fastapi>=0.162
+uvicorn>=0.54
+jinja2>=3.1

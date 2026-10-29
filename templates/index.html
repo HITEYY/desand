@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Panel</title>
+<link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+</head>
+<body>
+<aside>
+  <h1>Agent Panel</h1>
+  <h2>Agents</h2>
+  <div id="available">
+    {% for name in available %}<div class="avail"><span>{{ name }}</span></div>
+    {% endfor %}
+  </div>
+  <datalist id="workspaces"></datalist>
+  <h2>API Keys</h2>
+  <div id="keys"></div>
+</aside>
+<main id="running"><p class="empty">왼쪽에서 에이전트를 시작하세요.</p></main>
+<footer>
+  <textarea id="input" placeholder="체크된 에이전트에게 보낼 메시지 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
+  <button class="primary" id="send">Send</button>
+</footer>
+<div id="toast"></div>
+<script src="{{ url_for('static', path='panel.js') }}"></script>
+</body>
+</html>
