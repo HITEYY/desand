@@ -1,0 +1,119 @@
+# desand
+
+여러 LLM 에이전트를 동시에 돌리고, 웹 패널에서 관리하고, 대화 기록을 학습 데이터로 저장하는 작은 Python 에이전트 런타임.
+
+- 에이전트 = `agents/` 안의 파일 하나 (provider, 모델, 시스템 프롬프트, 도구)
+- 여러 에이전트에 같은 메시지를 병렬로 보냄, 에이전트마다 메모리 따로
+- Anthropic, OpenCode Go, OpenScale, Experiential 지원
+- 모든 대화를 OpenAI fine-tuning 형식으로 `trajectories/`에 저장
+- 로컬 웹 패널 (표준 라이브러리만 사용)
+
+## 설치
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+사용할 provider의 API 키를 환경변수로 설정:
+
+| provider | 환경변수 | 기본 모델 | 방식 |
+|---|---|---|---|
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-5-5` | Anthropic Messages |
+| `opencode-go` | `OPENCODE_API_KEY` | `kimi-k3` | OpenAI 호환 |
+| `opencode-go-anthropic` | `OPENCODE_API_KEY` | `claude-haiku-5-5` | Anthropic 호환 |
+| `openscale` | `OPENSCALE_KEY` | 없음 (`MODEL` 지정 필요) | OpenAI 호환 |
+| `experiential` | `EXPERIENTIAL_API_KEY` | 없음 (`MODEL` 지정 필요) | OpenAI 호환 |
+
+## 사용법
+
+### CLI
+
+```bash
+.venv/bin/python agent.py --list                          # 에이전트 목록
+.venv/bin/python agent.py                                 # agents/default.py 와 대화
+.venv/bin/python agent.py -a researcher -a writer         # 두 에이전트에 동시에 대화
+.venv/bin/python agent.py -a web "https://example.com 요약해줘"   # 한 번만 실행
+```
+
+대화 중 `/reset` 은 메모리 초기화, `exit` 는 종료.
+
+### 웹 패널
+
+```bash
+.venv/bin/python server.py   # http://127.0.0.1:8000
+```
+
+- 왼쪽에서 에이전트 Start
+- 카드의 체크박스로 메시지 받을 에이전트 선택 → 아래 입력창에서 전송 (Enter 전송, Shift+Enter 줄바꿈)
+- 카드마다 상태(작업 중/대기), 대화, 도구 호출, 에러 표시
+- Reset 으로 메모리 초기화, Stop 으로 종료
+
+서버를 재시작하면 실행 중이던 에이전트와 메모리는 사라집니다 (`trajectories/` 기록은 남음).
+
+## 에이전트 만들기
+
+`agents/<이름>.py` 파일 하나를 만들면 됩니다. 모든 항목은 선택:
+
+```python
+from core import list_files, read_file
+
+PROVIDER = "openscale"            # 기본 "anthropic"
+MODEL = "..."                     # 기본: provider 기본 모델
+SYSTEM = "You are ..."            # 기본: 범용 시스템 프롬프트
+TOOLS = [list_files, read_file]   # 기본: 로컬 도구 전체
+```
+
+포함된 예시:
+
+| 파일 | provider | 도구 |
+|---|---|---|
+| `default.py` | anthropic | 로컬 도구 전체 |
+| `researcher.py` | opencode-go (`kimi-k3`) | 읽기 전용 (`list_files`, `read_file`) |
+| `writer.py` | anthropic | 로컬 도구 전체 |
+| `web.py` | anthropic | 웹 검색/가져오기 + 파일 도구 |
+
+### 도구
+
+| 도구 | 설명 |
+|---|---|
+| `get_time` | 현재 시각 |
+| `list_files`, `read_file`, `write_file` | 실행 폴더 안의 파일만 접근 (밖은 거부) |
+| `WEB_TOOLS` | Anthropic 서버 도구 `web_search`, `web_fetch` (`PROVIDER = "anthropic"` 전용, 턴당 각 5회) |
+
+직접 도구를 추가하려면 `anthropic`의 `@beta_tool` 함수를 만들어 `TOOLS`에 넣으면 됩니다. 함수 시그니처와 docstring에서 스키마가 자동 생성되고, OpenAI 호환 provider에도 같은 도구가 쓰입니다.
+
+## 학습 데이터
+
+성공한 턴마다 `trajectories/<세션>-<에이전트>.json` 에 대화 전체가 저장됩니다 (실패한 턴은 저장 안 됨).
+
+- 형식: OpenAI fine-tuning 채팅 형식 (`messages` + `tools`), provider 상관없이 동일
+- 포함: 시스템 프롬프트, 사용자 메시지, 도구 호출과 결과, 응답, 에이전트/provider/모델
+- Anthropic thinking 블록은 제외
+
+하나의 JSONL로 합치기:
+
+```bash
+jq -c . trajectories/*.json > train.jsonl
+```
+
+주의:
+- 각 provider의 이용약관을 확인하세요. Anthropic 등은 출력물로 경쟁 모델을 학습하는 것을 금지합니다.
+- 도구 결과에 읽은 파일 내용이 들어가므로 비밀값이 섞일 수 있습니다. `trajectories/`는 `.gitignore`에 포함되어 있습니다.
+
+## 보안
+
+- 웹 패널은 `127.0.0.1`에만 열리고 인증이 없습니다. 외부 네트워크에 노출하지 마세요.
+- 다른 웹사이트가 패널을 조작하지 못하도록 JSON Content-Type과 Host 헤더를 검사합니다.
+- 파일 도구는 실행 폴더 밖 경로를 거부합니다.
+- `web` 에이전트는 웹 페이지 내용에 섞인 지시문(prompt injection)에 속아 파일을 쓸 수 있습니다. 걱정되면 `agents/web.py`에서 `write_file`을 빼세요.
+
+## 구조
+
+```
+core.py       도구, provider, 에이전트 실행 루프, 기록 저장
+agent.py      CLI (여러 에이전트 병렬 실행)
+server.py     웹 패널 API 서버
+panel.html    웹 패널 화면
+agents/       에이전트 정의 파일
+```
