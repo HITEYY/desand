@@ -11,19 +11,26 @@
   <h1>Agent Panel</h1>
   <h2>Agents</h2>
   <div id="available">
-    {% for name in available %}<div class="avail"><span>{{ name }}</span></div>
+    {% for name in available %}<button class="avail" disabled><span>{{ name }}</span></button>
     {% endfor %}
   </div>
-  <datalist id="workspaces"></datalist>
-  <h2>API Keys</h2>
-  <div id="keys"></div>
+  <a class="nav" href="/settings">⚙ Settings</a>
 </aside>
 <main id="running"><p class="empty">왼쪽에서 에이전트를 시작하세요.</p></main>
 <footer>
   <textarea id="input" placeholder="체크된 에이전트에게 보낼 메시지 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
   <button class="primary" id="send">Send</button>
 </footer>
-<div id="toast"></div>
+<dialog id="start-dialog">
+  <form>
+    <h3></h3>
+    <label>Workspace <input name="workspace" required value="default" list="workspaces"></label>
+    <label>Model <input name="model"></label>
+    <div class="actions"><button type="button" value="cancel">Cancel</button><button class="primary">Start</button></div>
+  </form>
+</dialog>
+<datalist id="workspaces"></datalist>
+<div id="toast" popover="manual"></div>
 <script src="{{ url_for('static', path='panel.js') }}"></script>
 </body>
 </html>

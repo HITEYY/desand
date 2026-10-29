@@ -9,7 +9,9 @@ async function api(path, body) {
   if (!r.ok) toast(data.error || r.statusText);
   return data;
 }
-function toast(msg) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 4000); }
+// popover = top layer, so it shows above the open start dialog
+function toast(msg) { const t = $("#toast"); t.textContent = msg; if (!t.matches(":popover-open")) t.showPopover();
+  clearTimeout(t._h); t._h = setTimeout(() => t.hidePopover(), 4000); }
 
 function renderLog(log, a) {
   log.replaceChildren();
@@ -56,41 +58,42 @@ async function loadModels(provider) {
   for (const id of await api(`/api/models?provider=${encodeURIComponent(provider)}`)) list.append(el("option", null)).value = id;
 }
 
+const dlg = $("#start-dialog");
+let starting = null;  // agent info the dialog is starting
+
+function openStart(a) {
+  starting = a;
+  const f = dlg.querySelector("form");
+  f.querySelector("h3").textContent = `${a.name} · ${a.provider}`;
+  if (!$(`#models-${CSS.escape(a.provider)}`)) { const dl = el("datalist"); dl.id = `models-${a.provider}`; document.body.append(dl); }
+  const m = f.model;
+  m.setAttribute("list", `models-${a.provider}`); m.value = "";
+  m.placeholder = a.model || "모델 입력 (필수)"; m.required = !a.model;
+  m.onfocus = () => loadModels(a.provider);
+  dlg.showModal();
+}
+
 function renderAvailable(state, runningNames) {
   const av = $("#available");
-  av.querySelectorAll(":scope > :not(details)").forEach(e => e.remove());  // server-rendered placeholders
-  const ws = $("#workspaces"); ws.replaceChildren(...state.workspaces.map(w => { const o = el("option"); o.value = w; return o; }));
+  av.querySelectorAll(":scope > :not([data-name])").forEach(e => e.remove());  // server-rendered placeholders
+  $("#workspaces").replaceChildren(...state.workspaces.map(w => { const o = el("option"); o.value = w; return o; }));
   for (const a of state.available) {
-    let row = av.querySelector(`details[data-name="${CSS.escape(a.name)}"]`);
-    if (!row) {  // build once, so polling doesn't wipe the form
-      row = el("details", "avail"); row.dataset.name = a.name;
-      const sum = el("summary"); sum.append(el("span", null, a.name), el("small", null, a.provider));
-      if (!$(`#models-${CSS.escape(a.provider)}`)) { const dl = el("datalist"); dl.id = `models-${a.provider}`; document.body.append(dl); }
-      const form = el("form");
-      const wsIn = el("input"); wsIn.name = "workspace"; wsIn.required = true; wsIn.value = "default";
-      wsIn.setAttribute("list", "workspaces");
-      const mIn = el("input"); mIn.name = "model"; mIn.setAttribute("list", `models-${a.provider}`);
-      mIn.placeholder = a.model || "모델 입력 (필수)"; mIn.required = !a.model;
-      mIn.onfocus = () => loadModels(a.provider);
-      const go = el("button", "primary", "Start");
-      form.append(el("label", null, "Workspace"), wsIn, el("label", null, "Model"), mIn, go);
-      form.onsubmit = async (e) => {
-        e.preventDefault();
-        const r = await api("/api/start", { name: a.name, workspace: wsIn.value, model: mIn.value });
-        if (r.ok) { selected.add(a.name); row.open = false; }
-        refresh();
-      };
-      row.append(sum, form); av.append(row);
+    let row = av.querySelector(`[data-name="${CSS.escape(a.name)}"]`);
+    if (!row) {
+      row = el("button", "avail"); row.dataset.name = a.name;
+      row.append(el("span", null, a.name), el("small", null, a.provider));
+      av.append(row);
     }
+    row.onclick = () => openStart(a);  // latest info (default model may change)
     const on = runningNames.includes(a.name);
     row.classList.toggle("on", on);
-    row.querySelector("button").disabled = on;
-    row.querySelector("button").textContent = on ? "Running" : "Start";
+    row.disabled = on;
   }
 }
 
 function render(state) {
-  renderKeys(state.keys);
+  if ($("#keys")) renderKeys(state.keys);
+  if (!$("#running")) return;  // settings page
   const runningNames = state.running.map(a => a.name);
   renderAvailable(state, runningNames);
 
@@ -130,7 +133,17 @@ async function send() {
   if (r.ok) $("#input").value = "";
   refresh();
 }
-$("#send").onclick = send;
-$("#input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+if ($("#running")) {
+  $("#send").onclick = send;
+  $("#input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+  dlg.querySelector("[value=cancel]").onclick = () => dlg.close();
+  dlg.querySelector("form").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const r = await api("/api/start", { name: starting.name, workspace: f.workspace.value, model: f.model.value });
+    if (r.ok) { selected.add(starting.name); dlg.close(); }
+    refresh();
+  };
+}
 
 refresh(); setInterval(refresh, 1000);

@@ -97,6 +97,11 @@ def index(request: Request):
     return templates.TemplateResponse(request, "index.html", {"available": available()})
 
 
+@app.get("/settings")
+def settings(request: Request):
+    return templates.TemplateResponse(request, "settings.html")
+
+
 @app.get("/api/state")
 def state() -> dict:
     with lock:
