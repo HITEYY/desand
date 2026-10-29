@@ -1,11 +1,12 @@
 """Web panel for starting, chatting with, and stopping agents. Run: python server.py  ->  http://127.0.0.1:8000"""
 import os
+import secrets
 import threading
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -15,10 +16,17 @@ from core import PROVIDERS, WORKSPACES, agent_defaults, ask, list_models, load_a
 HERE = Path(__file__).parent
 running = {}  # name -> agent
 lock = threading.Lock()
+PASSWORD = os.environ.get("PANEL_PASSWORD") or secrets.token_urlsafe(16)  # random per run if unset; printed at startup
 
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-# Host check stops DNS rebinding: other sites can't reach the panel through a hostname they control.
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1"])
+
+def auth(creds: HTTPBasicCredentials = Depends(HTTPBasic())) -> None:
+    # Browser shows its own login prompt and resends the credentials on every fetch; any username works.
+    # Also stops DNS rebinding: a hostname another site controls never gets this origin's credentials.
+    if not secrets.compare_digest(creds.password.encode(), PASSWORD.encode()):
+        raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Basic"})
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, dependencies=[Depends(auth)])  # static files stay public
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 templates = Jinja2Templates(directory=HERE / "templates")
 
@@ -51,7 +59,7 @@ def json_only(request: Request) -> None:
 
 @app.exception_handler(HTTPException)
 def http_error(request: Request, exc: HTTPException) -> JSONResponse:
-    return JSONResponse({"error": exc.detail}, exc.status_code)
+    return JSONResponse({"error": exc.detail}, exc.status_code, headers=exc.headers)  # keep WWW-Authenticate
 
 
 def available() -> list:
@@ -166,8 +174,9 @@ def send_message(body: Message) -> dict:
 if __name__ == "__main__":
     import uvicorn
 
-    # Local only: agents can read/write files in the working directory and there is no auth.
-    # HOST=0.0.0.0 only inside a container, published to the host's loopback (see README).
-    host = os.environ.get("HOST", "127.0.0.1")
-    print(f"Agent panel: http://127.0.0.1:8000 (listening on {host})")
+    # Agents can read/write files in the working directory; the password is the only gate, over plain HTTP.
+    host = os.environ.get("HOST", "0.0.0.0")  # HOST=127.0.0.1 for this machine only
+    print(f"Agent panel: http://127.0.0.1:8000 (listening on {host}:8000)")
+    if not os.environ.get("PANEL_PASSWORD"):
+        print(f"Password: {PASSWORD}  (set PANEL_PASSWORD to choose one)")
     uvicorn.run(app, host=host, port=8000, log_level="warning")

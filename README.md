@@ -43,9 +43,10 @@ python3 -m venv .venv
 ### 웹 패널
 
 ```bash
-.venv/bin/python server.py   # http://127.0.0.1:8000
+.venv/bin/python server.py   # http://127.0.0.1:8000, 같은 네트워크에선 http://<이 PC IP>:8000
 ```
 
+- 접속 시 브라우저 로그인 창이 뜹니다. 사용자명은 아무거나, 비밀번호는 `PANEL_PASSWORD` 환경 변수 값. 설정 안 하면 실행할 때마다 랜덤 비밀번호가 터미널에 출력됩니다
 - 왼쪽 **API Keys** 에서 키 입력 후 Save (점 초록 = 설정됨, 비우고 Save = 삭제). 서버 메모리에만 저장되어 재시작하면 사라지고, 이미 실행 중인 에이전트는 Stop → Start 해야 새 키를 씁니다
 - 왼쪽에서 에이전트 이름을 눌러 **Workspace** 와 **Model** 을 고른 뒤 Start
   - Workspace: `workspaces/<이름>/` 폴더 (없으면 생성). 에이전트 파일 도구는 자기 workspace 밖(다른 workspace, 상위 폴더, 심볼릭 링크 너머)에 접근할 수 없습니다. 이름은 글자·숫자·`-` `_` `.` 만
@@ -61,8 +62,8 @@ python3 -m venv .venv
 `main` 푸시와 `v*` 태그마다 GitHub Actions가 이미지를 빌드해 GHCR에 올립니다 (`linux/amd64`, `linux/arm64`).
 
 ```bash
-docker run --rm -p 127.0.0.1:8000:8000 \
-  -e ANTHROPIC_API_KEY \
+docker run --rm -p 8000:8000 \
+  -e ANTHROPIC_API_KEY -e PANEL_PASSWORD \
   -v "$PWD:/work" \
   -v "$PWD/trajectories:/app/trajectories" \
   ghcr.io/hiteyy/desand:latest
@@ -71,7 +72,7 @@ docker run --rm -p 127.0.0.1:8000:8000 \
 - `/work`: workspace 들이 `/work/workspaces/<이름>/` 에 생성됨 (CLI `agent.py` 는 `/work` 전체)
 - `/app/trajectories`: 학습 데이터 저장 위치
 - 이미지에 Playwright + 헤드리스 Chromium 이 포함되어 있어 브라우저 도구를 바로 쓸 수 있습니다
-- 반드시 `127.0.0.1:<포트>:8000` 으로 publish 하세요. 패널은 인증이 없고, Host 헤더가 `localhost`/`127.0.0.1` 일 때만 동작합니다.
+- `-p 8000:8000` 은 외부에서도 접속 가능. 이 PC에서만 쓰려면 `-p 127.0.0.1:8000:8000`. 인증은 비밀번호 하나뿐이고 HTTPS가 아닙니다.
 - 태그: `latest`(main), `main`, `sha-<커밋>`, `v1.2.3` 태그 푸시 시 `1.2.3`·`1.2`
 
 ## 에이전트 만들기
@@ -127,9 +128,10 @@ jq -c . trajectories/*.json > train.jsonl
 
 ## 보안
 
-- 웹 패널은 `127.0.0.1`에만 열리고 인증이 없습니다. 외부 네트워크에 노출하지 마세요.
-- 다른 웹사이트가 패널을 조작하지 못하도록 POST는 JSON Content-Type만 받고, Host 헤더는 `localhost`/`127.0.0.1`만 허용합니다.
+- 웹 패널은 기본으로 `0.0.0.0` (모든 네트워크 인터페이스)에 열리고 HTTP Basic 비밀번호로 보호됩니다. 평문 HTTP라 같은 네트워크에서 비밀번호를 엿볼 수 있으니, 인터넷에 노출할 땐 HTTPS 리버스 프록시를 앞에 두세요. 이 PC에서만 쓰려면 `HOST=127.0.0.1`.
+- 다른 웹사이트가 패널을 조작하지 못하도록 POST는 JSON Content-Type만 받습니다.
 - 파일 도구는 실행 폴더 밖 경로를 거부합니다.
+- 브라우저 도구는 임의의 URL을 열 수 있으므로 페이지 내용에 섞인 지시문(prompt injection)에 주의하세요.
 - `web` 에이전트는 웹 페이지 내용에 섞인 지시문(prompt injection)에 속아 파일을 쓸 수 있습니다. 걱정되면 `agents/web.py`에서 `write_file`을 빼세요.
 
 ## 구조
