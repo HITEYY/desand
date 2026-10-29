@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from core import (PROVIDERS, TOOL_BY_NAME, WEB_TOOLS, WORKSPACES, agent_defaults, ask, file_agents, list_models,
+from core import (PROVIDERS, TOOL_BY_NAME, WORKSPACES, agent_defaults, ask, file_agents, list_models,
                   load_agent, load_config, to_openai_messages, update_config, valid_name, workspace_dir)
 
 HERE = Path(__file__).parent
@@ -20,7 +20,6 @@ running = {}  # name -> agent
 lock = threading.Lock()
 PASSWORD = os.environ.get("PANEL_PASSWORD") or secrets.token_urlsafe(16)  # random per run if unset; printed at startup
 SESSION = secrets.token_urlsafe(32)  # login cookie value; a restart logs everyone out
-WEB_TOOL_NAMES = {t["name"] for t in WEB_TOOLS}
 
 
 def auth(panel_session: str = Cookie("")) -> None:
@@ -171,7 +170,7 @@ def state() -> dict:
                             "agents": [a.name for a in agents if a.workspace == w]} for w in workspaces()],
             "models": [{"name": n, **m} for n, m in sorted(cfg["models"].items())],
             "providers": {n: {"default": p["model"], "key": p["key_env"]} for n, p in PROVIDERS.items()},
-            "tools": list(TOOL_BY_NAME), "web_tools": sorted(WEB_TOOL_NAMES),
+            "tools": list(TOOL_BY_NAME),
             "keys": {k: bool(os.environ.get(k)) for k in key_names()}}  # set/unset only, never the value
 
 
@@ -195,9 +194,6 @@ def save_model(body: Model) -> dict:
         bad("모델 ID를 입력하세요")
 
     def change(cfg):
-        users = [a for a, d in cfg["agents"].items() if d["model"] == name]
-        if body.provider != "anthropic" and any(set(cfg["agents"][a].get("tools", [])) & WEB_TOOL_NAMES for a in users):
-            bad("웹 도구를 쓰는 에이전트가 이 모델을 사용 중이라 provider는 anthropic이어야 합니다")
         cfg["models"][name] = {"provider": body.provider, "model": model}
     update_config(change)
     return {"ok": True}
@@ -230,8 +226,6 @@ def save_agent(body: Agent) -> dict:
         m = cfg["models"].get(body.model)
         if not m:
             bad("모델을 고르세요")
-        if set(body.tools) & WEB_TOOL_NAMES and m["provider"] != "anthropic":
-            bad("web_search / web_fetch 는 anthropic provider 모델에서만 됩니다")
         cfg["agents"][name] = {"model": body.model, "system": body.system.strip(), "tools": body.tools}
     update_config(change)
     return {"ok": True}  # a running copy keeps its old definition until restarted

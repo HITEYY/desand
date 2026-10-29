@@ -107,7 +107,7 @@ TOOLS = [list_files, read_file]   # 기본: 로컬 도구 전체
 | `get_time` | 현재 시각 |
 | `list_files`, `read_file`, `write_file` | 실행 폴더 안의 파일만 접근 (밖은 거부) |
 | `browser_open`, `browser_click`, `browser_fill`, `browser_text`, `browser_screenshot` | 헤드리스 Chromium 으로 페이지 열기/클릭/입력/텍스트/스크린샷. 스크린샷은 실행 폴더에 저장 |
-| `WEB_TOOLS` | Anthropic 서버 도구 `web_search`, `web_fetch` (`PROVIDER = "anthropic"` 전용, 턴당 각 5회) |
+| `WEB_TOOLS` | `web_search`, `web_fetch`. `PROVIDER = "anthropic"`이면 Anthropic 서버 도구(턴당 각 5회), 그 외 provider는 같은 이름의 로컬 구현(DuckDuckGo 검색, URL 텍스트 가져오기) |
 
 직접 도구를 추가하려면 `anthropic`의 `@beta_tool` 함수를 만들어 `TOOLS`에 넣으면 됩니다. 함수 시그니처와 docstring에서 스키마가 자동 생성되고, OpenAI 호환 provider에도 같은 도구가 쓰입니다.
 

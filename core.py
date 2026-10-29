@@ -1,10 +1,13 @@
 """Shared agent runtime: tools, providers, and the per-provider tool loops."""
 import contextvars
+import html
 import importlib
 import json
 import os
 import re
 import threading
+import urllib.parse
+import urllib.request
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -184,11 +187,55 @@ def browser_screenshot(path: str = "screenshot.png") -> str:
     return f"saved screenshot to {path}"
 
 
+def _get(url: str, data: bytes | None = None) -> str:
+    req = urllib.request.Request(url, data, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return r.read(2_000_000).decode(r.headers.get_content_charset() or "utf-8", "replace")
+
+
+def _strip_tags(s: str) -> str:
+    s = re.sub(r"(?is)<(script|style|noscript|svg)\b.*?</\1>|<[^>]+>", " ", s)
+    return re.sub(r"\s+", " ", html.unescape(s)).strip()
+
+
+# Local stand-ins for Anthropic's server tools (same names), used by every provider except native "anthropic".
+@beta_tool
+def local_web_search(query: str) -> str:
+    """Search the web and return the top results (title, URL, snippet).
+
+    Args:
+        query: Search query.
+    """
+    # ponytail: scrapes DuckDuckGo's HTML page; swap for a search API if it starts rate-limiting
+    page = _get("https://html.duckduckgo.com/html/", urllib.parse.urlencode({"q": query}).encode())
+    out = []
+    for href, title, snippet in re.findall(
+            r'class="result__a" href="([^"]+)"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</a>', page, re.S)[:8]:
+        url = urllib.parse.parse_qs(urllib.parse.urlparse(html.unescape(href)).query).get("uddg", [href])[0]
+        out.append(f"{_strip_tags(title)}\n{url}\n{_strip_tags(snippet)}")
+    return "\n\n".join(out) or "no results"
+
+
+@beta_tool
+def local_web_fetch(url: str) -> str:
+    """Fetch a web page (http/https) and return its text.
+
+    Args:
+        url: The page URL.
+    """
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("only http/https URLs")
+    return _strip_tags(_get(url))[:50_000]
+
+
+local_web_search.name, local_web_fetch.name = "web_search", "web_fetch"
+
+
 BROWSER_TOOLS = [browser_open, browser_click, browser_fill, browser_text, browser_screenshot]
 TOOLS = [get_time, list_files, read_file, write_file, *BROWSER_TOOLS]
 
-# Anthropic server-side tools: run on Anthropic's servers, no local code. Only for PROVIDER = "anthropic".
-# web_fetch only fetches URLs already in the conversation (from the user or a web_search result).
+# Anthropic server-side tools: run on Anthropic's servers, no local code. On any other provider load_agent swaps
+# them for the local web_search / web_fetch above. Server web_fetch only fetches URLs already in the conversation.
 WEB_TOOLS = [
     {"type": "web_search_20260209", "name": "web_search", "max_uses": 5},
     {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5},
@@ -404,8 +451,9 @@ def load_agent(name: str, model: str | None = None, workspace: str | None = None
     if not model:
         raise SystemExit(f"agents/{name}.py: set MODEL (provider '{provider}' has no default)")
     tools = getattr(mod, "TOOLS", TOOLS)
-    if any(isinstance(t, dict) for t in tools) and provider != "anthropic":
-        raise SystemExit(f"agents/{name}.py: WEB_TOOLS need PROVIDER = 'anthropic' (got '{provider}')")
+    if provider != "anthropic":  # server tools only run on Anthropic's own API
+        local = {"web_search": local_web_search, "web_fetch": local_web_fetch}
+        tools = [local[t["name"]] if isinstance(t, dict) else t for t in tools]
     client, run, extra = make_client(provider)
     return SimpleNamespace(
         name=name, provider=provider, model=model, client=client, run=run, extra=extra,
