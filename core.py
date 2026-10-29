@@ -5,6 +5,7 @@ import json
 import os
 import re
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -308,14 +309,20 @@ def run_turn_openai(agent, messages: list) -> None:
 
 
 def make_client(name: str):
+    """One client per agent, so per-client headers identify that agent's conversation."""
     cfg = PROVIDERS[name]
     key = os.environ.get(cfg["key_env"])
     if not key:
         raise SystemExit(f"set {cfg['key_env']} for provider '{name}'")
+    headers = {}
+    if "opencode.ai" in (cfg["base_url"] or ""):
+        # OpenCode Go rejects requests without a stable per-conversation session id and wants a non-SDK user agent.
+        headers = {"x-opencode-session": str(uuid.uuid4()), "User-Agent": "desand/1.0"}
     if cfg["kind"] == "openai":
-        return openai.OpenAI(api_key=key, base_url=cfg["base_url"]), run_turn_openai, {}
+        return openai.OpenAI(api_key=key, base_url=cfg["base_url"], default_headers=headers), run_turn_openai, {}
     if cfg["base_url"]:  # third-party Anthropic-compatible endpoint: Bearer auth, no Anthropic-only params
-        return anthropic.Anthropic(auth_token=key, base_url=cfg["base_url"]), run_turn_anthropic, {}
+        return (anthropic.Anthropic(auth_token=key, base_url=cfg["base_url"], default_headers=headers),
+                run_turn_anthropic, {})
     extra = dict(betas=["server-side-fallback-2026-07-01"], fallbacks="default")
     return anthropic.Anthropic(api_key=key), run_turn_anthropic, extra
 
