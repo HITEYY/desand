@@ -296,15 +296,59 @@ def to_openai_messages(messages: list) -> list:
     return out
 
 
+def finetune_message(m: dict) -> dict:
+    """Keep only the keys OpenAI fine-tuning accepts; providers add extras (reasoning_content, refusal, annotations...)."""
+    out = {"role": m["role"]}
+    if m.get("content") is not None:
+        out["content"] = m["content"] if isinstance(m["content"], str) else json.dumps(m["content"], ensure_ascii=False)
+    if m.get("tool_calls"):
+        out["tool_calls"] = [{"id": c["id"], "type": "function",
+                              "function": {"name": c["function"]["name"], "arguments": c["function"]["arguments"]}}
+                             for c in m["tool_calls"]]
+    if m["role"] == "tool":
+        out["tool_call_id"] = m["tool_call_id"]
+    return out
+
+
 def save_trajectory(agent) -> None:
-    """Rewrite trajectories/<session>-<agent>.json with the whole conversation in OpenAI fine-tuning format."""
+    """Rewrite trajectories/<session>-<agent>.jsonl: one OpenAI fine-tuning example ({"messages", "tools"}) per file."""
     LOG_DIR.mkdir(exist_ok=True)
-    record = {
-        "id": f"{SESSION}-{agent.name}", "agent": agent.name, "provider": agent.provider, "model": agent.model,
-        "tools": openai_tools(agent.tools),
-        "messages": [{"role": "system", "content": agent.system}, *to_openai_messages(agent.messages)],
-    }
-    (LOG_DIR / f"{record['id']}.json").write_text(json.dumps(record, ensure_ascii=False, default=str))
+    messages = [{"role": "system", "content": agent.system}, *to_openai_messages(agent.messages)]
+    record = {"messages": [finetune_message(m) for m in messages]}
+    if agent.tools:
+        record["tools"] = openai_tools(agent.tools)
+    path = LOG_DIR / f"{SESSION}-{agent.name}.jsonl"
+    tmp = path.with_suffix(".tmp")  # write then rename, so an S3 upload never reads a half-written file
+    tmp.write_text(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    tmp.replace(path)
+
+
+# S3 settings, read from env (the panel's key page sets them too). Credentials also come from boto3's usual
+# sources (~/.aws, IAM role) when the AWS_* vars are unset. S3_ENDPOINT_URL is for R2 / MinIO / other S3-compatibles.
+S3_ENV = ["S3_BUCKET", "S3_PREFIX", "S3_ENDPOINT_URL", "AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+
+
+def s3_target() -> str | None:
+    bucket = os.environ.get("S3_BUCKET")
+    prefix = os.environ.get("S3_PREFIX", "trajectories").strip("/")
+    return f"s3://{bucket}/{prefix + '/' if prefix else ''}" if bucket else None
+
+
+def upload_trajectories() -> list:
+    """Upload every trajectories/*.jsonl to s3://$S3_BUCKET/$S3_PREFIX/ (overwrites); returns the uploaded keys."""
+    target = s3_target()
+    if not target:
+        raise SystemExit("set S3_BUCKET")
+    import boto3  # lazy, like playwright: only needed when uploading
+    bucket, prefix = target.removeprefix("s3://").split("/", 1)
+    s3 = boto3.client("s3", endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
+                      region_name=os.environ.get("AWS_REGION") or None)
+    keys = []
+    # ponytail: re-uploads every file each time; skip unchanged ones (compare size/ETag) if the folder gets big
+    for f in sorted(LOG_DIR.glob("*.jsonl")):
+        s3.upload_file(str(f), bucket, prefix + f.name, ExtraArgs={"ContentType": "application/jsonl"})
+        keys.append(prefix + f.name)
+    return keys
 
 
 def run_turn_anthropic(agent, messages: list) -> None:

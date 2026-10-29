@@ -12,8 +12,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from core import (PROVIDERS, TOOL_BY_NAME, WORKSPACES, agent_defaults, ask, file_agents, list_models,
-                  load_agent, load_config, to_openai_messages, update_config, valid_name, workspace_dir)
+from core import (PROVIDERS, S3_ENV, TOOL_BY_NAME, WORKSPACES, agent_defaults, ask, file_agents, list_models,
+                  load_agent, load_config, s3_target, to_openai_messages, update_config, upload_trajectories,
+                  valid_name, workspace_dir)
 
 HERE = Path(__file__).parent
 running = {}  # name -> agent
@@ -100,7 +101,7 @@ def workspaces() -> list:
 
 
 def key_names() -> list:
-    return sorted({c["key_env"] for c in PROVIDERS.values()})
+    return sorted({c["key_env"] for c in PROVIDERS.values()}) + S3_ENV
 
 
 def view(a) -> dict:
@@ -171,7 +172,8 @@ def state() -> dict:
             "models": [{"name": n, **m} for n, m in sorted(cfg["models"].items())],
             "providers": {n: {"default": p["model"], "key": p["key_env"]} for n, p in PROVIDERS.items()},
             "tools": list(TOOL_BY_NAME),
-            "keys": {k: bool(os.environ.get(k)) for k in key_names()}}  # set/unset only, never the value
+            "keys": {k: bool(os.environ.get(k)) for k in key_names()},  # set/unset only, never the value
+            "s3": s3_target()}
 
 
 @api.get("/api/models")
@@ -297,6 +299,15 @@ def set_key(body: Key) -> dict:
     else:
         os.environ.pop(body.env, None)
     return {"ok": True}
+
+
+@api.post("/api/s3/upload", dependencies=[Depends(json_only)])
+def s3_upload() -> dict:
+    try:
+        keys = upload_trajectories()
+    except BaseException as e:  # missing bucket (SystemExit), bad credentials, network
+        bad(f"S3 업로드 실패: {e}")
+    return {"ok": True, "count": len(keys), "target": s3_target()}
 
 
 @api.post("/api/stop", dependencies=[Depends(json_only)])

@@ -2,5 +2,12 @@
 {% block title %}API 키{% endblock %}
 {% block content %}
 <header class="topbar"><div><h1>API 키</h1><p class="muted">서버 메모리에만 저장되어 재시작하면 사라집니다. 실행 중인 에이전트는 다시 시작해야 새 키를 씁니다.</p></div></header>
-<div class="manage single"><div id="keys" class="list"></div></div>
+<div class="manage single">
+  <div id="keys" class="list"></div>
+  <section class="panel">
+    <h2>S3 업로드</h2>
+    <p class="muted" id="s3-target"></p>
+    <div class="actions"><button class="primary" id="s3-upload" type="button">trajectories 업로드</button></div>
+  </section>
+</div>
 {% endblock %}

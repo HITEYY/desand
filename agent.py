@@ -3,11 +3,12 @@
   python agent.py                         # chat with agents/default.py
   python agent.py -a researcher -a writer # every message goes to both, in parallel
   python agent.py -a researcher -a writer "summarize README"   # one-shot
+  python agent.py --upload-s3             # upload trajectories/*.jsonl to $S3_BUCKET
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 
-from core import ask, file_agents, load_agent, load_config
+from core import ask, file_agents, load_agent, load_config, upload_trajectories
 
 
 def broadcast(agents, text: str) -> None:
@@ -19,11 +20,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("-a", "--agent", action="append", help="agent name (repeatable)")
     ap.add_argument("--list", action="store_true", help="list available agents")
+    ap.add_argument("--upload-s3", action="store_true", help="upload trajectories/*.jsonl to S3 and exit")
     ap.add_argument("prompt", nargs="?", help="run once with this prompt instead of chatting")
     args = ap.parse_args()
 
     if args.list:
         print("\n".join(sorted({*file_agents(), *load_config()["agents"]})))
+        return
+    if args.upload_s3:
+        print(f"uploaded {len(upload_trajectories())} files")
         return
     agents = [load_agent(n) for n in dict.fromkeys(args.agent or ["default"])]
     if args.prompt:

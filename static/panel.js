@@ -234,7 +234,7 @@ function renderKeys() {
   for (const [k, set] of Object.entries(state.keys)) {
     let r = box.querySelector(`[data-key="${k}"]`);
     if (!r) {  // build once, so refreshes don't wipe what's being typed
-      const providers = Object.entries(state.providers).filter(([, p]) => p.key === k).map(([n]) => n).join(", ");
+      const providers = Object.entries(state.providers).filter(([, p]) => p.key === k).map(([n]) => n).join(", ") || "S3 업로드";
       const input = el("input"); input.type = "password"; input.autocomplete = "off"; input.setAttribute("aria-label", k);
       const form = el("form", "inline");
       form.append(input, el("button", "primary", "저장"));
@@ -251,6 +251,17 @@ function renderKeys() {
     r.querySelector(".dot").classList.toggle("off", !set);
     r.querySelector("input").placeholder = set ? "설정됨 · 비우고 저장 = 삭제" : "키 입력";
   }
+  $("#s3-target").textContent = state.s3 ? `trajectories/*.jsonl → ${state.s3}` : "S3_BUCKET 을 설정하세요 (S3_PREFIX 기본 trajectories)";
+  $("#s3-upload").disabled = !state.s3;
+}
+
+if ($("#s3-upload")) {
+  $("#s3-upload").onclick = async (e) => {
+    e.target.disabled = true;
+    const r = await api("/api/s3/upload", {});
+    if (r.ok) toast(`${r.count}개 파일 업로드됨 → ${r.target}`, true);
+    refresh();
+  };
 }
 
 // ---------- refresh ----------
